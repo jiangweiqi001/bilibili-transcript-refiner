@@ -271,6 +271,61 @@ class PrepareTranscriptTests(unittest.TestCase):
         self.assertTrue(second.reused)
         self.assertEqual(second.raw_path.read_bytes(), before)
 
+    def test_reuse_rejects_valid_jsonl_whose_sha256_changed(self):
+        first = prepare_transcript(
+            "https://www.bilibili.com/video/BV1rnGt61E4j/",
+            self.output,
+            self.runtime,
+            runner=FakeRunner(),
+        )
+        rows = [
+            json.loads(line)
+            for line in first.raw_path.read_text(encoding="utf-8").splitlines()
+        ]
+        rows[0]["text"] = "tampered but still valid JSONL"
+        first.raw_path.write_text(
+            "".join(
+                json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
+                for row in rows
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "SHA-256"):
+            prepare_transcript(
+                "https://www.bilibili.com/video/BV1rnGt61E4j/",
+                self.output,
+                self.runtime,
+                runner=lambda _args: (_ for _ in ()).throw(
+                    AssertionError("tools must not run before reuse validation")
+                ),
+            )
+
+    def test_reuse_requires_completed_manifest_state(self):
+        first = prepare_transcript(
+            "https://www.bilibili.com/video/BV1rnGt61E4j/",
+            self.output,
+            self.runtime,
+            runner=FakeRunner(),
+        )
+        manifest_path = first.job_dir / "job.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["state"] = "unexpected"
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "not complete"):
+            prepare_transcript(
+                "https://www.bilibili.com/video/BV1rnGt61E4j/",
+                self.output,
+                self.runtime,
+                runner=lambda _args: (_ for _ in ()).throw(
+                    AssertionError("tools must not run before reuse validation")
+                ),
+            )
+
     def test_resume_skips_successful_segment_checkpoint(self):
         runner = FakeRunner(empty_second_segment=True)
         with self.assertRaisesRegex(ValueError, "empty ASR text"):

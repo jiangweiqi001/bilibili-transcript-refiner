@@ -548,9 +548,18 @@ def prepare_transcript(
             raise ValueError(
                 "an explicit ASR rerun is incomplete; invoke again with --rerun-asr to resume it"
             )
+        if manifest.get("state") != "asr_complete":
+            raise ValueError(
+                "existing raw transcript job is not complete; request an explicit ASR rerun"
+            )
         if manifest.get("media_validated") is not True:
             raise ValueError(
                 "existing raw transcript predates media-duration validation; request an explicit ASR rerun"
+            )
+        recorded_sha256 = manifest.get("raw_sha256")
+        if not isinstance(recorded_sha256, str) or _sha256(raw_path) != recorded_sha256:
+            raise ValueError(
+                "existing raw transcript SHA-256 does not match its job manifest; request an explicit ASR rerun"
             )
         return PreparationResult(
             target,
