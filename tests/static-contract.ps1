@@ -89,4 +89,25 @@ if (-not $bootstrap.Contains('Start-Process') -or -not $bootstrap.Contains('Redi
     throw 'native startup checks must isolate expected stderr from PowerShell error handling'
 }
 
+$correctionGuide = Get-Content -LiteralPath (Join-Path $repo 'references/faithful-correction.md') -Raw -Encoding utf8
+$outputGuide = Get-Content -LiteralPath (Join-Path $repo 'references/output-contract.md') -Raw -Encoding utf8
+$workflow = $skill + "`n" + $correctionGuide + "`n" + $outputGuide
+$workflowRequired = @(
+    'roughly ten minutes',
+    'rolling list',
+    'one corrected row',
+    'audio inspection is available',
+    'never claim acoustic verification',
+    'Resume at the first missing correction row',
+    'finalize_transcript.py',
+    '--status complete',
+    '--status incomplete',
+    'run the whole workflow without approval pauses'
+)
+foreach ($needle in $workflowRequired) {
+    if (-not $workflow.Contains($needle)) {
+        throw "missing faithful workflow contract: $needle"
+    }
+}
+
 Write-Output 'static Skill contract: PASS'

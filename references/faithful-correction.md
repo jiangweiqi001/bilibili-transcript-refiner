@@ -27,7 +27,7 @@ Treat the recording as the authority and the raw ASR as immutable evidence. Corr
 3. Preserve exactly one corrected row and the same `start`/`end` for every raw row.
 4. Compare each proposed change with the raw wording. Revert any change that is stylistic rather than corrective.
 5. Inspect or replay the time range when audio inspection is available. Otherwise try nearby segment boundaries or additional ASR context, then retain an uncertainty marker.
-6. Append accepted rows to `corrections.jsonl` atomically so an interrupted run resumes at the first missing row.
+6. Append accepted rows to `corrections.jsonl` atomically. Resume at the first missing correction row, and do not regenerate accepted earlier rows merely to make them stylistically consistent.
 
 ## Uncertainty
 
