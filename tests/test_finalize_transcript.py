@@ -193,7 +193,7 @@ class FinalizationTests(unittest.TestCase):
 
     def test_finalizes_atomically_and_keeps_exactly_two_files(self):
         corrected = finalize_transcript(self.job, self.output, status="complete")
-        self.assertEqual(corrected, self.formal / "corrected-transcript.md")
+        self.assertEqual(corrected, (self.formal / "corrected-transcript.md").resolve())
         self.assertEqual(self.raw.read_bytes(), self.raw_before)
         self.assertEqual(
             sorted(path.name for path in self.formal.iterdir()),

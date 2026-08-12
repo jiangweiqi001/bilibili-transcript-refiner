@@ -159,7 +159,7 @@ class PrepareTranscriptTests(unittest.TestCase):
             ],
         )
         self.assertEqual(result.job_manifest["state"], "asr_complete")
-        self.assertTrue(result.job_dir.is_relative_to(self.runtime))
+        self.assertTrue(result.job_dir.resolve().is_relative_to(self.runtime.resolve()))
         self.assertTrue(all(ord(character) < 128 for character in str(result.job_dir)))
 
     def test_explicit_page_uses_suffix_and_is_not_defaulted(self):
