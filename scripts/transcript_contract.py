@@ -6,15 +6,58 @@ import json
 import os
 import re
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import BinaryIO, Iterable, Iterator, Sequence
 from urllib.parse import parse_qs, urlparse
 
 
 _BVID_RE = re.compile(r"/video/(BV[A-Za-z0-9]{10})(?:/|$)")
 _TIMESTAMP_RE = re.compile(r"^(\d{2,}):(\d{2}):(\d{2})\.(\d{3})$")
 _RAW_KEYS = ["start", "end", "text"]
+
+
+def _lock_byte(handle: BinaryIO, *, unlock: bool = False) -> None:
+    handle.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        mode = msvcrt.LK_UNLCK if unlock else msvcrt.LK_NBLCK
+        msvcrt.locking(handle.fileno(), mode, 1)
+        return
+
+    import fcntl  # pragma: no cover - the published Skill targets Windows.
+
+    mode = fcntl.LOCK_UN if unlock else fcntl.LOCK_EX | fcntl.LOCK_NB
+    fcntl.flock(handle.fileno(), mode)
+
+
+@contextmanager
+def exclusive_job_lock(path: Path | str) -> Iterator[None]:
+    """Hold a process-level lock for one transcript job, releasing it on crashes."""
+
+    lock_path = Path(path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b")
+    acquired = False
+    try:
+        if lock_path.stat().st_size == 0:
+            handle.write(b"\0")
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            _lock_byte(handle)
+            acquired = True
+        except OSError as exc:
+            raise RuntimeError(
+                f"transcript job is already running: {lock_path.parent}"
+            ) from exc
+        yield
+    finally:
+        if acquired:
+            _lock_byte(handle, unlock=True)
+        handle.close()
 
 
 @dataclass(frozen=True)
@@ -166,7 +209,13 @@ def write_jsonl_atomic(
                 handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(partial, destination)
+        if allow_replace:
+            os.replace(partial, destination)
+        elif os.name == "nt":
+            os.rename(partial, destination)
+        else:  # pragma: no cover - the published Skill targets Windows.
+            os.link(partial, destination)
+            partial.unlink()
     finally:
         if partial.exists():
             partial.unlink()

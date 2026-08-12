@@ -23,6 +23,9 @@ $required = @(
     $inaudibleMarker,
     'references/faithful-correction.md',
     'references/output-contract.md'
+    'full bilibili.com/video/BV'
+    'python -X utf8 scripts/prepare_transcript.py --url "<URL>" --output-root "<DIR>"'
+    'python -X utf8 scripts/finalize_transcript.py --job-dir "<JOB_DIR>" --output-root "<DIR>" --status complete'
 )
 foreach ($needle in $required) {
     if (-not $skill.Contains($needle)) {
@@ -76,6 +79,8 @@ $bootstrapRequired = @(
     '4AE45C94422DE949B387E2E0FB10D7E14E4C42C69DB30C3444ECC7D4B844B7C5',
     'fsmn-vad.gguf',
     '1270F2559C495F4E7B6E739541151027D360761A3FDA43FC147034F5719F5479'
+    'Invoke-StartupCheck -Executable $ffprobe'
+    'Invoke-StartupCheck -Executable $vad'
 )
 foreach ($needle in $bootstrapRequired) {
     if (-not $bootstrap.Contains($needle)) {

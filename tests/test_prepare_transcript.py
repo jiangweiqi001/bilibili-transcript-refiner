@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.prepare_transcript import prepare_transcript
+from scripts.prepare_transcript import _job_directory, prepare_transcript
+from scripts.transcript_contract import BilibiliTarget, exclusive_job_lock
 
 
 class FakeRunner:
@@ -229,7 +230,9 @@ class PrepareTranscriptTests(unittest.TestCase):
         self.assertEqual(len(vad_runs), 1)
 
     def test_archives_and_redownloads_truncated_cached_source(self):
-        job = self.runtime / "jobs" / "BV1rnGt61E4j"
+        job = _job_directory(
+            self.runtime, self.output, BilibiliTarget("BV1rnGt61E4j")
+        )
         job.mkdir(parents=True, exist_ok=True)
         (job / "source.m4a").write_bytes(b"truncated-source")
         runner = FakeRunner(source_duration=59.98, cached_source_duration=10.0)
@@ -326,6 +329,105 @@ class PrepareTranscriptTests(unittest.TestCase):
                 ),
             )
 
+    def test_reuse_requires_manifest_to_name_the_same_raw_path(self):
+        first = prepare_transcript(
+            "https://www.bilibili.com/video/BV1rnGt61E4j/",
+            self.output,
+            self.runtime,
+            runner=FakeRunner(),
+        )
+        manifest_path = first.job_dir / "job.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["raw_path"] = str(self.base / "somewhere-else" / "raw-transcript.jsonl")
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "same output path"):
+            prepare_transcript(
+                "https://www.bilibili.com/video/BV1rnGt61E4j/",
+                self.output,
+                self.runtime,
+                runner=lambda _args: (_ for _ in ()).throw(
+                    AssertionError("tools must not run before reuse validation")
+                ),
+            )
+
+    def test_reuse_requires_manifest_to_name_the_same_video(self):
+        first = prepare_transcript(
+            "https://www.bilibili.com/video/BV1rnGt61E4j/",
+            self.output,
+            self.runtime,
+            runner=FakeRunner(),
+        )
+        manifest_path = first.job_dir / "job.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["bvid"] = "BV1aaaaaaaaaa"
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "identity"):
+            prepare_transcript(
+                "https://www.bilibili.com/video/BV1rnGt61E4j/",
+                self.output,
+                self.runtime,
+                runner=lambda _args: (_ for _ in ()).throw(
+                    AssertionError("tools must not run before reuse validation")
+                ),
+            )
+
+    def test_same_video_uses_distinct_jobs_for_distinct_output_roots(self):
+        first_output = self.base / "out-a"
+        second_output = self.base / "out-b"
+        first = prepare_transcript(
+            "https://www.bilibili.com/video/BV1rnGt61E4j/",
+            first_output,
+            self.runtime,
+            runner=FakeRunner(),
+        )
+        second = prepare_transcript(
+            "https://www.bilibili.com/video/BV1rnGt61E4j/",
+            second_output,
+            self.runtime,
+            runner=FakeRunner(),
+        )
+        reused_first = prepare_transcript(
+            "https://www.bilibili.com/video/BV1rnGt61E4j/",
+            first_output,
+            self.runtime,
+            runner=lambda _args: (_ for _ in ()).throw(
+                AssertionError("tools must not run when the first job is reusable")
+            ),
+        )
+
+        self.assertNotEqual(first.job_dir, second.job_dir)
+        self.assertEqual(reused_first.job_dir, first.job_dir)
+        self.assertEqual(
+            Path(reused_first.job_manifest["raw_path"]).resolve(),
+            reused_first.raw_path.resolve(),
+        )
+
+    def test_prepare_rejects_a_concurrent_run_for_the_same_job(self):
+        first = prepare_transcript(
+            "https://www.bilibili.com/video/BV1rnGt61E4j/",
+            self.output,
+            self.runtime,
+            runner=FakeRunner(),
+        )
+        with exclusive_job_lock(first.job_dir / "job.lock"):
+            with self.assertRaisesRegex(RuntimeError, "already running"):
+                prepare_transcript(
+                    "https://www.bilibili.com/video/BV1rnGt61E4j/",
+                    self.output,
+                    self.runtime,
+                    runner=lambda _args: (_ for _ in ()).throw(
+                        AssertionError("tools must not run before lock acquisition")
+                    ),
+                )
+
     def test_resume_skips_successful_segment_checkpoint(self):
         runner = FakeRunner(empty_second_segment=True)
         with self.assertRaisesRegex(ValueError, "empty ASR text"):
@@ -391,7 +493,7 @@ class PrepareTranscriptTests(unittest.TestCase):
         )
 
     def test_interrupted_explicit_rerun_resumes_same_run(self):
-        prepare_transcript(
+        first = prepare_transcript(
             "https://www.bilibili.com/video/BV1rnGt61E4j/",
             self.output,
             self.runtime,
@@ -406,9 +508,7 @@ class PrepareTranscriptTests(unittest.TestCase):
                 rerun_asr=True,
             )
         interrupted = json.loads(
-            (self.runtime / "jobs" / "BV1rnGt61E4j" / "job.json").read_text(
-                encoding="utf-8"
-            )
+            (first.job_dir / "job.json").read_text(encoding="utf-8")
         )
 
         runner = FakeRunner()

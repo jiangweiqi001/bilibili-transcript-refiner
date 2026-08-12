@@ -16,6 +16,7 @@ from typing import Sequence
 try:
     from scripts.transcript_contract import (
         Segment,
+        exclusive_job_lock,
         format_timestamp,
         output_name,
         parse_timestamp,
@@ -24,6 +25,7 @@ try:
 except ModuleNotFoundError:  # Direct execution from scripts/.
     from transcript_contract import (  # type: ignore
         Segment,
+        exclusive_job_lock,
         format_timestamp,
         output_name,
         parse_timestamp,
@@ -230,7 +232,7 @@ def _assert_formal_entries(formal_dir: Path) -> None:
         raise ValueError(f"unexpected deliverable in formal directory: {unexpected[0]}")
 
 
-def finalize_transcript(
+def _finalize_transcript_locked(
     job_dir: Path | str,
     output_root: Path | str,
     *,
@@ -298,6 +300,23 @@ def finalize_transcript(
     )
     _write_json_atomic(job_dir / "job.json", job_value)
     return corrected_path
+
+
+def finalize_transcript(
+    job_dir: Path | str,
+    output_root: Path | str,
+    *,
+    status: str,
+    incomplete_reason: str | None = None,
+) -> Path:
+    resolved_job_dir = Path(job_dir).resolve()
+    with exclusive_job_lock(resolved_job_dir / "job.lock"):
+        return _finalize_transcript_locked(
+            resolved_job_dir,
+            output_root,
+            status=status,
+            incomplete_reason=incomplete_reason,
+        )
 
 
 def main() -> int:

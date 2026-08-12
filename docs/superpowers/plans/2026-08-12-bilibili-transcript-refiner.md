@@ -88,7 +88,7 @@ Run:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tests/static-contract.ps1
-python C:\Users\25739\.codex\skills\.system\skill-creator\scripts\quick_validate.py .
+python -X utf8 C:\Users\25739\.codex\skills\.system\skill-creator\scripts\quick_validate.py .
 ```
 
 Expected: both commands exit 0.
@@ -243,8 +243,8 @@ Expected: import failure because the module is absent.
 Expose:
 
 ```text
-python scripts/prepare_transcript.py --url URL --output-root DIR [--runtime-root DIR]
-python scripts/prepare_transcript.py --url URL --output-root DIR --rerun-asr
+python -X utf8 scripts/prepare_transcript.py --url URL --output-root DIR [--runtime-root DIR]
+python -X utf8 scripts/prepare_transcript.py --url URL --output-root DIR --rerun-asr
 ```
 
 Use `yt-dlp --dump-single-json --no-playlist` for metadata and `-f bestaudio/best --no-playlist` for audio. Convert to mono 16-kHz PCM WAV. Run `llama-funasr-vad.exe` to obtain millisecond spans, cut each clip with FFmpeg under the ASCII job directory, and run `llama-funasr-sensevoice.exe` once per clip. Preserve its lexical output exactly after removing only documented `<|...|>` control tags. Store `metadata.json`, `vad.json`, per-segment text, and `job.json` only in the job cache. Atomically install raw JSONL after count/order/coverage validation.
@@ -295,8 +295,8 @@ Expected: import failure because the finalizer is absent.
 Expose:
 
 ```text
-python scripts/finalize_transcript.py --job-dir DIR --output-root DIR --status complete
-python scripts/finalize_transcript.py --job-dir DIR --output-root DIR --status incomplete
+python -X utf8 scripts/finalize_transcript.py --job-dir DIR --output-root DIR --status complete
+python -X utf8 scripts/finalize_transcript.py --job-dir DIR --output-root DIR --status incomplete
 ```
 
 Reject missing/extra correction rows, changed timestamps, empty text, malformed uncertainty markers, `complete` with unlisted markers, unexpected deliverables, and changed raw SHA-256 since correction began. Write `corrected-transcript.md.partial`, validate it, then `os.replace`. Archive a superseded raw transcript only under `job-dir/archive/`; formal output must end with exactly the two contractual filenames.
@@ -342,7 +342,7 @@ Run:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tests/static-contract.ps1
-python C:\Users\25739\.codex\skills\.system\skill-creator\scripts\quick_validate.py .
+python -X utf8 C:\Users\25739\.codex\skills\.system\skill-creator\scripts\quick_validate.py .
 ```
 
 Expected: both exit 0.
@@ -374,7 +374,7 @@ Run:
 ```powershell
 python -m unittest discover -s tests -p 'test_*.py' -v
 powershell -NoProfile -ExecutionPolicy Bypass -File tests/static-contract.ps1
-python C:\Users\25739\.codex\skills\.system\skill-creator\scripts\quick_validate.py .
+python -X utf8 C:\Users\25739\.codex\skills\.system\skill-creator\scripts\quick_validate.py .
 git diff --check
 ```
 
@@ -385,7 +385,7 @@ Expected: all tests pass, Skill validation succeeds, and diff check is empty.
 Use the already supplied public reference video and a dedicated acceptance output root:
 
 ```powershell
-python scripts/prepare_transcript.py `
+python -X utf8 scripts/prepare_transcript.py `
   --url 'https://www.bilibili.com/video/BV1rnGt61E4j/' `
   --output-root 'C:\Users\25739\AppData\Local\bilibili-transcript-refiner\acceptance-output'
 ```

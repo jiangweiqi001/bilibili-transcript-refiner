@@ -193,7 +193,9 @@ $vad = Find-One -Root $funasrPackage -Leaf 'llama-funasr-vad.exe'
 
 Invoke-StartupCheck -Executable $ytDlp -Arguments @('--version') -AllowedExitCodes @(0)
 Invoke-StartupCheck -Executable $ffmpeg -Arguments @('-version') -AllowedExitCodes @(0)
+Invoke-StartupCheck -Executable $ffprobe -Arguments @('-version') -AllowedExitCodes @(0)
 Invoke-StartupCheck -Executable $sensevoice -Arguments @('--help') -AllowedExitCodes @(1)
+Invoke-StartupCheck -Executable $vad -Arguments @('--help') -AllowedExitCodes @(1)
 
 $manifest = [ordered]@{
     schema_version = 1

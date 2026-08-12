@@ -20,6 +20,7 @@ try:
     from scripts.transcript_contract import (
         BilibiliTarget,
         Segment,
+        exclusive_job_lock,
         format_timestamp,
         output_name,
         parse_bilibili_url,
@@ -31,6 +32,7 @@ except ModuleNotFoundError:  # Direct execution from scripts/.
     from transcript_contract import (  # type: ignore
         BilibiliTarget,
         Segment,
+        exclusive_job_lock,
         format_timestamp,
         output_name,
         parse_bilibili_url,
@@ -518,7 +520,15 @@ def _archive_superseded_correction(formal_dir: Path, job_dir: Path) -> None:
             shutil.move(str(source), str(target))
 
 
-def prepare_transcript(
+def _job_directory(runtime_root: Path, output_root: Path, target: BilibiliTarget) -> Path:
+    normalized_output = os.path.normcase(str(output_root.resolve()))
+    output_digest = hashlib.sha256(normalized_output.encode("utf-8")).hexdigest()[:12]
+    return runtime_root / "jobs" / (
+        f"{output_name(target.bvid, target.page)}-out-{output_digest}"
+    )
+
+
+def _prepare_transcript_locked(
     url: str,
     output_root: Path | str,
     runtime_root: Path | str,
@@ -532,7 +542,7 @@ def prepare_transcript(
     runtime = _load_runtime(runtime_root)
     formal_dir = Path(output_root).resolve() / output_name(target.bvid, target.page)
     raw_path = formal_dir / "raw-transcript.jsonl"
-    job_dir = runtime_root / "jobs" / output_name(target.bvid, target.page)
+    job_dir = _job_directory(runtime_root, Path(output_root), target)
     _ensure_ascii(job_dir)
     job_dir.mkdir(parents=True, exist_ok=True)
     metadata_path = job_dir / "metadata.json"
@@ -552,9 +562,22 @@ def prepare_transcript(
             raise ValueError(
                 "existing raw transcript job is not complete; request an explicit ASR rerun"
             )
+        if (
+            manifest.get("schema_version") != 1
+            or manifest.get("bvid") != target.bvid
+            or manifest.get("page") != target.page
+        ):
+            raise ValueError(
+                "existing raw transcript job identity does not match the request; request an explicit ASR rerun"
+            )
         if manifest.get("media_validated") is not True:
             raise ValueError(
                 "existing raw transcript predates media-duration validation; request an explicit ASR rerun"
+            )
+        manifest_raw_path = Path(str(manifest.get("raw_path", ""))).resolve()
+        if manifest_raw_path != raw_path.resolve():
+            raise ValueError(
+                "existing raw transcript manifest does not name the same output path; request an explicit ASR rerun"
             )
         recorded_sha256 = manifest.get("raw_sha256")
         if not isinstance(recorded_sha256, str) or _sha256(raw_path) != recorded_sha256:
@@ -636,6 +659,28 @@ def prepare_transcript(
         manifest,
         page_defaulted,
     )
+
+
+def prepare_transcript(
+    url: str,
+    output_root: Path | str,
+    runtime_root: Path | str,
+    *,
+    runner: Runner = _default_runner,
+    rerun_asr: bool = False,
+) -> PreparationResult:
+    target = parse_bilibili_url(url)
+    runtime_path = Path(runtime_root).resolve()
+    job_dir = _job_directory(runtime_path, Path(output_root), target)
+    _ensure_ascii(job_dir)
+    with exclusive_job_lock(job_dir / "job.lock"):
+        return _prepare_transcript_locked(
+            url,
+            output_root,
+            runtime_root,
+            runner=runner,
+            rerun_asr=rerun_asr,
+        )
 
 
 def _default_runtime_root() -> Path:

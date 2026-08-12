@@ -11,7 +11,12 @@ from scripts.finalize_transcript import (
     finalize_transcript,
     render_corrected,
 )
-from scripts.transcript_contract import Segment, read_jsonl, write_jsonl_atomic
+from scripts.transcript_contract import (
+    Segment,
+    exclusive_job_lock,
+    read_jsonl,
+    write_jsonl_atomic,
+)
 
 
 def sha256(path: Path) -> str:
@@ -195,6 +200,11 @@ class FinalizationTests(unittest.TestCase):
             ["corrected-transcript.md", "raw-transcript.jsonl"],
         )
         self.assertNotIn(".partial-", corrected.name)
+
+    def test_finalize_rejects_a_concurrent_job_transition(self):
+        with exclusive_job_lock(self.job / "job.lock"):
+            with self.assertRaisesRegex(RuntimeError, "already running"):
+                finalize_transcript(self.job, self.output, status="complete")
 
     def test_rejects_changed_raw_hash(self):
         self.raw.write_bytes(self.raw.read_bytes() + b"\n")

@@ -1,7 +1,9 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.transcript_contract import (
     Segment,
@@ -107,6 +109,25 @@ class JsonlTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 write_jsonl_atomic(path, [Segment(0, 100, "改")])
             self.assertEqual(path.read_bytes(), before)
+
+    @unittest.skipUnless(os.name == "nt", "published evidence contract targets Windows")
+    def test_atomic_writer_loses_a_race_without_overwriting_the_winner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "raw-transcript.jsonl"
+            original_rename = os.rename
+
+            def install_competing_evidence(partial, destination):
+                Path(destination).write_text("winner\n", encoding="utf-8")
+                return original_rename(partial, destination)
+
+            with patch(
+                "scripts.transcript_contract.os.rename",
+                side_effect=install_competing_evidence,
+            ):
+                with self.assertRaises(FileExistsError):
+                    write_jsonl_atomic(path, [Segment(0, 100, "loser")])
+            self.assertEqual(path.read_text(encoding="utf-8"), "winner\n")
+            self.assertEqual(list(path.parent.glob("*.partial-*")), [])
 
     def test_reader_rejects_extra_or_reordered_keys(self):
         with tempfile.TemporaryDirectory() as tmp:
