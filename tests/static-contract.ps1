@@ -54,9 +54,32 @@ if (-not $ui.Contains('$bilibili-transcript-refiner')) {
     throw 'default_prompt must explicitly mention $bilibili-transcript-refiner'
 }
 
-foreach ($forbidden in @('README.md', 'INSTALLATION_GUIDE.md', 'QUICK_REFERENCE.md', 'CHANGELOG.md')) {
+foreach ($forbidden in @('INSTALLATION_GUIDE.md', 'QUICK_REFERENCE.md', 'CHANGELOG.md')) {
     if (Test-Path -LiteralPath (Join-Path $repo $forbidden)) {
         throw "extraneous Skill file: $forbidden"
+    }
+}
+
+$readmePath = Join-Path $repo 'README.md'
+if (-not (Test-Path -LiteralPath $readmePath -PathType Leaf)) {
+    throw 'README.md is required for the public repository'
+}
+$readme = Get-Content -LiteralPath $readmePath -Raw -Encoding utf8
+$functionHeading = '## ' + [char]0x529F + [char]0x80FD
+$highlightHeading = '## ' + [char]0x4EAE + [char]0x70B9
+$usageHeading = '## ' + [char]0x4F7F + [char]0x7528 + [char]0x793A + [char]0x4F8B
+foreach ($needle in @(
+    $functionHeading,
+    $highlightHeading,
+    $usageHeading,
+    'SenseVoiceSmall',
+    'Codex',
+    'raw-transcript.jsonl',
+    'corrected-transcript.md',
+    '$bilibili-transcript-refiner'
+)) {
+    if (-not $readme.Contains($needle)) {
+        throw "missing README contract: $needle"
     }
 }
 
