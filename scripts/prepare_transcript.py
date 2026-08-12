@@ -209,15 +209,63 @@ def _find_cached_audio(job_dir: Path) -> Path | None:
     return matches[0] if matches else None
 
 
+def _probe_duration_ms(
+    media: Path, runtime: dict[str, str], runner: Runner
+) -> int:
+    result = _run_checked(
+        runner,
+        [
+            runtime["ffprobe"],
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "json",
+            str(media),
+        ],
+        f"duration probe for {media.name}",
+    )
+    try:
+        value = json.loads(result.stdout)
+        duration = float(value["format"]["duration"])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"ffprobe returned no valid duration for {media}") from exc
+    if duration <= 0:
+        raise ValueError(f"media duration must be positive: {media}")
+    return round(duration * 1000)
+
+
+def _duration_matches(actual_ms: int, expected_ms: int) -> bool:
+    tolerance_ms = max(2_000, round(expected_ms * 0.002))
+    return abs(actual_ms - expected_ms) <= tolerance_ms
+
+
+def _archive_invalid_media(path: Path, job_dir: Path) -> None:
+    archive = job_dir / "archive"
+    archive.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    target = archive / f"{path.stem}.invalid-{stamp}-{uuid.uuid4().hex[:8]}{path.suffix}"
+    shutil.move(str(path), str(target))
+
+
 def _prepare_wav(
     target: BilibiliTarget,
     job_dir: Path,
     runtime: dict[str, str],
     runner: Runner,
-) -> Path:
+    expected_duration_ms: int,
+) -> tuple[Path, int]:
     audio = _find_cached_audio(job_dir)
+    if audio is not None:
+        cached_duration_ms = _probe_duration_ms(audio, runtime, runner)
+        if not _duration_matches(cached_duration_ms, expected_duration_ms):
+            _archive_invalid_media(audio, job_dir)
+            audio = None
     if audio is None:
-        template = job_dir / "source.%(ext)s"
+        staging = job_dir / "staging" / f"download-{uuid.uuid4().hex}"
+        staging.mkdir(parents=True, exist_ok=False)
+        template = staging / "source.%(ext)s"
         result = _run_checked(
             runner,
             [
@@ -236,13 +284,26 @@ def _prepare_wav(
         printed = [line.strip() for line in result.stdout.splitlines() if line.strip()]
         if not printed:
             raise ValueError("yt-dlp did not report the downloaded audio path")
-        audio = Path(printed[-1])
-        if not audio.is_file() or audio.parent.resolve() != job_dir.resolve():
+        staged_audio = Path(printed[-1])
+        if not staged_audio.is_file() or staged_audio.parent.resolve() != staging.resolve():
             raise ValueError("yt-dlp reported an invalid audio path")
+        audio = job_dir / f"source{staged_audio.suffix.lower()}"
+        if audio.exists():
+            raise FileExistsError(f"canonical source audio already exists: {audio}")
+        os.replace(staged_audio, audio)
+        source_duration_ms = _probe_duration_ms(audio, runtime, runner)
+        if not _duration_matches(source_duration_ms, expected_duration_ms):
+            _archive_invalid_media(audio, job_dir)
+            raise ValueError(
+                f"downloaded audio duration {source_duration_ms}ms does not match video metadata {expected_duration_ms}ms"
+            )
 
     wav = job_dir / "speech.wav"
     if wav.is_file():
-        return wav
+        wav_duration_ms = _probe_duration_ms(wav, runtime, runner)
+        if _duration_matches(wav_duration_ms, expected_duration_ms):
+            return wav, wav_duration_ms
+        _archive_invalid_media(wav, job_dir)
     partial = job_dir / "speech.partial.wav"
     _run_checked(
         runner,
@@ -265,11 +326,19 @@ def _prepare_wav(
     )
     if not partial.is_file():
         raise RuntimeError("FFmpeg did not create the expected WAV file")
+    wav_duration_ms = _probe_duration_ms(partial, runtime, runner)
+    if not _duration_matches(wav_duration_ms, expected_duration_ms):
+        _archive_invalid_media(partial, job_dir)
+        raise ValueError(
+            f"converted WAV duration {wav_duration_ms}ms does not match video metadata {expected_duration_ms}ms"
+        )
     os.replace(partial, wav)
-    return wav
+    return wav, wav_duration_ms
 
 
-def _validate_vad_spans(spans: list[tuple[int, int]]) -> None:
+def _validate_vad_spans(
+    spans: list[tuple[int, int]], media_duration_ms: int
+) -> None:
     if not spans:
         raise ValueError("VAD found no speech segments")
     previous_end = 0
@@ -278,23 +347,36 @@ def _validate_vad_spans(spans: list[tuple[int, int]]) -> None:
             raise ValueError("VAD returned invalid segment boundaries")
         if start_ms < previous_end:
             raise ValueError("VAD segments overlap or are out of order")
+        if end_ms > media_duration_ms + 1_000:
+            raise ValueError("VAD segment extends beyond the validated WAV duration")
         previous_end = end_ms
 
 
 def _load_or_run_vad(
     wav: Path,
+    wav_duration_ms: int,
     job_dir: Path,
     runtime: dict[str, str],
     runner: Runner,
 ) -> list[tuple[int, int]]:
     path = job_dir / "vad.json"
+    wav_sha256 = _sha256(wav)
     if path.is_file():
         value = _read_json(path)
-        if not isinstance(value, list):
-            raise ValueError("vad.json must contain a list")
-        spans = [(int(row["start_ms"]), int(row["end_ms"])) for row in value]
-        _validate_vad_spans(spans)
-        return spans
+        if (
+            isinstance(value, dict)
+            and value.get("schema_version") == 1
+            and value.get("wav_sha256") == wav_sha256
+            and value.get("wav_duration_ms") == wav_duration_ms
+            and isinstance(value.get("spans"), list)
+        ):
+            spans = [
+                (int(row["start_ms"]), int(row["end_ms"]))
+                for row in value["spans"]
+            ]
+            _validate_vad_spans(spans, wav_duration_ms)
+            return spans
+        _archive_invalid_media(path, job_dir)
 
     result = _run_checked(
         runner,
@@ -309,10 +391,17 @@ def _load_or_run_vad(
     )
     combined = (result.stdout or "") + "\n" + (result.stderr or "")
     spans = [(int(start), int(end)) for start, end in _VAD_LINE_RE.findall(combined)]
-    _validate_vad_spans(spans)
+    _validate_vad_spans(spans, wav_duration_ms)
     _write_json_atomic(
         path,
-        [{"start_ms": start, "end_ms": end} for start, end in spans],
+        {
+            "schema_version": 1,
+            "wav_sha256": wav_sha256,
+            "wav_duration_ms": wav_duration_ms,
+            "spans": [
+                {"start_ms": start, "end_ms": end} for start, end in spans
+            ],
+        },
     )
     return spans
 
@@ -441,6 +530,10 @@ def prepare_transcript(
         manifest = _read_json(manifest_path)
         if not isinstance(metadata, dict) or not isinstance(manifest, dict):
             raise ValueError("reusable transcript job metadata is invalid")
+        if manifest.get("media_validated") is not True:
+            raise ValueError(
+                "existing raw transcript predates media-duration validation; request an explicit ASR rerun"
+            )
         return PreparationResult(
             target,
             formal_dir,
@@ -472,8 +565,13 @@ def prepare_transcript(
         "output_dir": str(formal_dir),
     }
     _write_json_atomic(manifest_path, manifest)
-    wav = _prepare_wav(target, job_dir, runtime, runner)
-    spans = _load_or_run_vad(wav, job_dir, runtime, runner)
+    expected_duration_ms = int(metadata["duration_ms"])
+    wav, wav_duration_ms = _prepare_wav(
+        target, job_dir, runtime, runner, expected_duration_ms
+    )
+    spans = _load_or_run_vad(
+        wav, wav_duration_ms, job_dir, runtime, runner
+    )
     run_dir = job_dir / "runs" / active_run
     rows = _transcribe_segments(wav, spans, run_dir, runtime, runner)
     validate_coverage(spans, rows)
@@ -487,6 +585,8 @@ def prepare_transcript(
             "raw_path": str(raw_path),
             "raw_sha256": _sha256(raw_path),
             "segment_count": len(rows),
+            "media_validated": True,
+            "media_duration_ms": wav_duration_ms,
         }
     )
     _write_json_atomic(manifest_path, manifest)

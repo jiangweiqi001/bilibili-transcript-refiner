@@ -8,9 +8,23 @@ from scripts.prepare_transcript import prepare_transcript
 
 
 class FakeRunner:
-    def __init__(self, *, empty_second_segment=False):
+    def __init__(
+        self,
+        *,
+        empty_second_segment=False,
+        source_duration=59.98,
+        cached_source_duration=None,
+        cached_wav_duration=59.98,
+    ):
         self.commands = []
         self.empty_second_segment = empty_second_segment
+        self.source_duration = source_duration
+        self.cached_source_duration = (
+            source_duration if cached_source_duration is None else cached_source_duration
+        )
+        self.cached_wav_duration = cached_wav_duration
+        self.converted_speech = False
+        self.downloaded_audio = False
 
     def __call__(self, args):
         command = [str(arg) for arg in args]
@@ -41,6 +55,7 @@ class FakeRunner:
             audio = Path(str(template).replace("%(ext)s", "m4a"))
             audio.parent.mkdir(parents=True, exist_ok=True)
             audio.write_bytes(b"fake-audio")
+            self.downloaded_audio = True
             return subprocess.CompletedProcess(
                 command, 0, stdout=str(audio) + "\n", stderr=""
             )
@@ -49,7 +64,26 @@ class FakeRunner:
             destination = Path(command[-1])
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(b"fake-wav")
+            if destination.name == "speech.partial.wav":
+                self.converted_speech = True
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        if executable == "ffprobe.exe":
+            media = Path(command[-1])
+            if media.name.startswith("source."):
+                duration = (
+                    self.source_duration
+                    if self.downloaded_audio
+                    else self.cached_source_duration
+                )
+            else:
+                duration = 59.98 if self.converted_speech else self.cached_wav_duration
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"format": {"duration": str(duration)}}),
+                stderr="",
+            )
 
         if executable == "llama-funasr-vad.exe":
             return subprocess.CompletedProcess(
@@ -136,6 +170,85 @@ class PrepareTranscriptTests(unittest.TestCase):
         )
         self.assertEqual(result.output_dir.name, "BV1rnGt61E4j-p02")
         self.assertFalse(result.page_defaulted)
+
+    def test_download_uses_unique_staging_before_installing_canonical_audio(self):
+        runner = FakeRunner()
+        result = prepare_transcript(
+            "https://www.bilibili.com/video/BV1rnGt61E4j/",
+            self.output,
+            self.runtime,
+            runner=runner,
+        )
+        download = next(
+            command
+            for command in runner.commands
+            if Path(command[0]).name.lower() == "yt-dlp.exe"
+            and "--dump-single-json" not in command
+        )
+        template = Path(download[download.index("-o") + 1])
+        self.assertIn("staging", template.parts)
+        self.assertNotEqual(template.parent, result.job_dir)
+        self.assertEqual(len(list(result.job_dir.glob("source.*"))), 1)
+
+    def test_rebuilds_truncated_cached_wav_before_asr(self):
+        job = self.runtime / "jobs" / "BV1rnGt61E4j"
+        job.mkdir(parents=True, exist_ok=True)
+        (job / "source.m4a").write_bytes(b"complete-source")
+        (job / "speech.wav").write_bytes(b"truncated-wav")
+        (job / "vad.json").write_text(
+            json.dumps([{"start_ms": 0, "end_ms": 10_000}]),
+            encoding="utf-8",
+        )
+        runner = FakeRunner(cached_wav_duration=10.0)
+
+        prepare_transcript(
+            "https://www.bilibili.com/video/BV1rnGt61E4j/",
+            self.output,
+            self.runtime,
+            runner=runner,
+        )
+
+        probes = [
+            command
+            for command in runner.commands
+            if Path(command[0]).name.lower() == "ffprobe.exe"
+        ]
+        conversions = [
+            command
+            for command in runner.commands
+            if Path(command[0]).name.lower() == "ffmpeg.exe"
+            and Path(command[-1]).name == "speech.partial.wav"
+        ]
+        vad_runs = [
+            command
+            for command in runner.commands
+            if Path(command[0]).name.lower() == "llama-funasr-vad.exe"
+        ]
+        self.assertGreaterEqual(len(probes), 2)
+        self.assertEqual(len(conversions), 1)
+        self.assertEqual(len(vad_runs), 1)
+
+    def test_archives_and_redownloads_truncated_cached_source(self):
+        job = self.runtime / "jobs" / "BV1rnGt61E4j"
+        job.mkdir(parents=True, exist_ok=True)
+        (job / "source.m4a").write_bytes(b"truncated-source")
+        runner = FakeRunner(source_duration=59.98, cached_source_duration=10.0)
+
+        result = prepare_transcript(
+            "https://www.bilibili.com/video/BV1rnGt61E4j/",
+            self.output,
+            self.runtime,
+            runner=runner,
+        )
+
+        downloads = [
+            command
+            for command in runner.commands
+            if Path(command[0]).name.lower() == "yt-dlp.exe"
+            and "--dump-single-json" not in command
+        ]
+        self.assertEqual(len(downloads), 1)
+        self.assertEqual(len(list((result.job_dir / "archive").glob("source.invalid-*.m4a"))), 1)
 
     def test_successful_raw_is_reused_without_running_tools(self):
         first = prepare_transcript(
