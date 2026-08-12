@@ -1,0 +1,4 @@
+interface:
+  display_name: "B站逐字稿转写与校订"
+  short_description: "将B站视频转为带时间戳、保留疑点且可追溯的忠实校订逐字稿"
+  default_prompt: "Use $bilibili-transcript-refiner to turn this Bilibili URL into a faithful timestamped transcript."
