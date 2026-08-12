@@ -7,10 +7,11 @@ from pathlib import Path
 from scripts.finalize_transcript import (
     Correction,
     Uncertainty,
+    _read_corrections,
     finalize_transcript,
     render_corrected,
 )
-from scripts.transcript_contract import Segment, write_jsonl_atomic
+from scripts.transcript_contract import Segment, read_jsonl, write_jsonl_atomic
 
 
 def sha256(path: Path) -> str:
@@ -97,6 +98,17 @@ class RenderingTests(unittest.TestCase):
                 [Correction(0, 18_000, "这里是[听不清]。", ())],
                 status="complete",
             )
+
+    def test_checked_in_fixture_renders_the_contract(self):
+        fixtures = Path(__file__).parent / "fixtures"
+        raw = read_jsonl(fixtures / "raw-transcript.jsonl")
+        corrections = _read_corrections(fixtures / "corrections.jsonl")
+        metadata = json.loads(
+            (fixtures / "metadata.json").read_text(encoding="utf-8")
+        )
+        doc = render_corrected(metadata, raw, corrections, status="complete")
+        self.assertIn("[疑似：遍历性]", doc)
+        self.assertIn("## 存疑处", doc)
         with self.assertRaisesRegex(ValueError, "marker"):
             render_corrected(
                 self.metadata,
