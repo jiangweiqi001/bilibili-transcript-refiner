@@ -504,6 +504,20 @@ def _archive_raw(raw_path: Path, job_dir: Path) -> None:
     shutil.copy2(raw_path, target)
 
 
+def _archive_superseded_correction(formal_dir: Path, job_dir: Path) -> None:
+    archive = job_dir / "archive"
+    archive.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    candidates = (
+        (formal_dir / "corrected-transcript.md", "corrected-transcript"),
+        (job_dir / "corrections.jsonl", "corrections"),
+    )
+    for source, label in candidates:
+        if source.is_file():
+            target = archive / f"{label}-{stamp}-{uuid.uuid4().hex[:8]}{source.suffix}"
+            shutil.move(str(source), str(target))
+
+
 def prepare_transcript(
     url: str,
     output_root: Path | str,
@@ -591,6 +605,7 @@ def prepare_transcript(
 
     if raw_path.is_file() and rerun_asr:
         _archive_raw(raw_path, job_dir)
+        _archive_superseded_correction(formal_dir, job_dir)
     write_jsonl_atomic(raw_path, rows, allow_replace=rerun_asr)
     manifest.update(
         {

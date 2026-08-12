@@ -305,6 +305,11 @@ class PrepareTranscriptTests(unittest.TestCase):
             runner=FakeRunner(),
         )
         old_bytes = first.raw_path.read_bytes()
+        corrected = first.output_dir / "corrected-transcript.md"
+        corrected.write_text("old corrected transcript", encoding="utf-8")
+        old_corrected = corrected.read_bytes()
+        correction_state = first.job_dir / "corrections.jsonl"
+        correction_state.write_text("old correction work state\n", encoding="utf-8")
         result = prepare_transcript(
             "https://www.bilibili.com/video/BV1rnGt61E4j/",
             self.output,
@@ -315,6 +320,16 @@ class PrepareTranscriptTests(unittest.TestCase):
         archives = list((result.job_dir / "archive").glob("raw-transcript-*.jsonl"))
         self.assertEqual(len(archives), 1)
         self.assertEqual(archives[0].read_bytes(), old_bytes)
+        corrected_archives = list(
+            (result.job_dir / "archive").glob("corrected-transcript-*.md")
+        )
+        self.assertEqual(len(corrected_archives), 1)
+        self.assertEqual(corrected_archives[0].read_bytes(), old_corrected)
+        correction_archives = list(
+            (result.job_dir / "archive").glob("corrections-*.jsonl")
+        )
+        self.assertEqual(len(correction_archives), 1)
+        self.assertFalse(correction_state.exists())
         self.assertEqual(
             sorted(path.name for path in result.output_dir.iterdir()),
             ["raw-transcript.jsonl"],
