@@ -530,6 +530,10 @@ def prepare_transcript(
         manifest = _read_json(manifest_path)
         if not isinstance(metadata, dict) or not isinstance(manifest, dict):
             raise ValueError("reusable transcript job metadata is invalid")
+        if manifest.get("state") == "preparing" and manifest.get("rerun_asr") is True:
+            raise ValueError(
+                "an explicit ASR rerun is incomplete; invoke again with --rerun-asr to resume it"
+            )
         if manifest.get("media_validated") is not True:
             raise ValueError(
                 "existing raw transcript predates media-duration validation; request an explicit ASR rerun"
@@ -550,7 +554,15 @@ def prepare_transcript(
     )
     old_manifest = _read_json(manifest_path) if manifest_path.is_file() else {}
     if rerun_asr:
-        active_run = _new_run_id()
+        if (
+            isinstance(old_manifest, dict)
+            and old_manifest.get("state") == "preparing"
+            and old_manifest.get("rerun_asr") is True
+            and isinstance(old_manifest.get("active_run"), str)
+        ):
+            active_run = old_manifest["active_run"]
+        else:
+            active_run = _new_run_id()
     elif isinstance(old_manifest, dict) and isinstance(old_manifest.get("active_run"), str):
         active_run = old_manifest["active_run"]
     else:
@@ -561,6 +573,7 @@ def prepare_transcript(
         "bvid": target.bvid,
         "page": target.page,
         "state": "preparing",
+        "rerun_asr": rerun_asr,
         "active_run": active_run,
         "output_dir": str(formal_dir),
     }

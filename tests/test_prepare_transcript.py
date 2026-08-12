@@ -320,6 +320,43 @@ class PrepareTranscriptTests(unittest.TestCase):
             ["raw-transcript.jsonl"],
         )
 
+    def test_interrupted_explicit_rerun_resumes_same_run(self):
+        prepare_transcript(
+            "https://www.bilibili.com/video/BV1rnGt61E4j/",
+            self.output,
+            self.runtime,
+            runner=FakeRunner(),
+        )
+        with self.assertRaisesRegex(ValueError, "empty ASR text"):
+            prepare_transcript(
+                "https://www.bilibili.com/video/BV1rnGt61E4j/",
+                self.output,
+                self.runtime,
+                runner=FakeRunner(empty_second_segment=True),
+                rerun_asr=True,
+            )
+        interrupted = json.loads(
+            (self.runtime / "jobs" / "BV1rnGt61E4j" / "job.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        runner = FakeRunner()
+        completed = prepare_transcript(
+            "https://www.bilibili.com/video/BV1rnGt61E4j/",
+            self.output,
+            self.runtime,
+            runner=runner,
+            rerun_asr=True,
+        )
+        sense_commands = [
+            command
+            for command in runner.commands
+            if Path(command[0]).name.lower() == "llama-funasr-sensevoice.exe"
+        ]
+        self.assertEqual(completed.job_manifest["active_run"], interrupted["active_run"])
+        self.assertEqual(len(sense_commands), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
