@@ -14,7 +14,7 @@ Create a Windows-only personal Codex Skill that accepts one Bilibili video URL a
 
 ## Fixed outputs
 
-Write exactly two deliverables under a directory named with the BV identifier:
+Write exactly two deliverables under a directory named with the BV identifier. Append `-pNN` only when the selected multipart page is greater than one:
 
 ```text
 BV1xxxxxxxxx/
@@ -51,7 +51,7 @@ The ASR engine is fixed to local SenseVoiceSmall. The correction stage is perfor
 - Target Windows and Codex Desktop only in the first version.
 - Cache pinned tools and model files in a dedicated per-user runtime directory; verify downloads and reuse them.
 - Write downloads, WAV, intermediate segments, and partial correction state to a work directory. Resume completed stages after interruption.
-- Never overwrite a successful raw transcript. On an explicitly requested ASR rerun, retain the previous raw file under a versioned name.
+- Never overwrite a successful raw transcript. On an explicitly requested ASR rerun, move the previous raw evidence into the job archive outside the formal output directory before atomically installing the replacement, so the formal output still contains exactly two files.
 - Fail explicitly for unavailable/login-gated videos, missing audio, invalid metadata, model startup failure, or incomplete segment coverage.
 - If poor audio prevents a fully reliable result, preserve the reliable work and label the corrected transcript as incomplete rather than presenting it as complete.
 
