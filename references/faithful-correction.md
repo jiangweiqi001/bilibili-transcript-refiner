@@ -28,7 +28,8 @@ Treat the recording as the authority and the raw ASR as immutable evidence. Corr
 4. Compare each proposed change with the raw wording. Revert any change that is stylistic rather than corrective.
 5. Inspect or replay the time range when audio inspection is available. Otherwise try nearby segment boundaries or additional ASR context, then retain an uncertainty marker.
 6. Write only the next accepted block to a temporary JSONL batch. Run `checkpoint_corrections.py` to validate it against the first missing raw row and atomically replace the authoritative `corrections.jsonl`. Resume at the first missing correction row, and do not regenerate accepted earlier rows merely to make them stylistically consistent.
-7. Read `correction-audit.json` after every checkpoint. Replay rows flagged for protected-token changes, major deletion, or large rewrite. Revise an unjustified change; retain a justified change only after acoustic review.
+7. Read `correction-audit.json` after every checkpoint. For an unjustified finding in an accepted row, build a replacement batch starting at that row and call `checkpoint_corrections.py` with `--replace-from <ROW_INDEX> --expected-corrections-sha256 "<CURRENT_CORRECTIONS_SHA256>"`. This is the only supported way to revise the accepted suffix; the hash guard prevents overwriting concurrent work.
+8. Run `review_corrections.py list --job-dir "<JOB_DIR>"` and replay each returned `clip_path`. After acoustic confirmation, record each retained finding by its own `finding_id`; the helper stores the exact raw, corrections, and clip hashes in `correction-reviews.json`.
 
 Never append to or edit `corrections.jsonl` directly. The checkpoint tool validates the complete accepted prefix, exact timestamps, marker accounting, and atomic installation.
 
@@ -38,7 +39,7 @@ Never append to or edit `corrections.jsonl` directly. The checkpoint tool valida
 - Use `[听不清]` when there is no reliable candidate.
 - Keep the marker exactly where the uncertain speech occurs.
 - Add one concise note for each marker, including alternatives only when genuinely plausible.
-- Do not use finalizer `--acknowledge-high-risk` unless every reported high-risk row was replayed and confirmed. If audio inspection is unavailable, never claim acoustic verification; keep the raw reading or use an uncertainty marker instead.
+- If audio inspection is unavailable, never claim acoustic verification or create a review record; keep the raw reading or use an uncertainty marker instead.
 
 ## Calibration example
 

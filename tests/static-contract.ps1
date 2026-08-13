@@ -28,12 +28,16 @@ $required = @(
     'Never assume the shell current working directory is the Skill directory.'
     '"<SKILL_DIR>\references\output-contract.md"'
     '"<SKILL_DIR>\references\faithful-correction.md"'
-    'powershell -NoProfile -ExecutionPolicy Bypass -File "<SKILL_DIR>\scripts\bootstrap_runtime.ps1"'
-    'python -X utf8 "<SKILL_DIR>\scripts\prepare_transcript.py" --url "<URL>" --output-root "<DIR>"'
+    'Get-BtrDefaultRuntimeRoot'
+    'powershell -NoProfile -ExecutionPolicy Bypass -File "<SKILL_DIR>\scripts\bootstrap_runtime.ps1" -RuntimeRoot "<RUNTIME_ROOT>"'
+    'python -X utf8 "<SKILL_DIR>\scripts\prepare_transcript.py" --url "<URL>" --output-root "<DIR>" --runtime-root "<RUNTIME_ROOT>"'
     'python -X utf8 "<SKILL_DIR>\scripts\checkpoint_corrections.py" --raw "<RAW_JSONL>" --checkpoint "<JOB_DIR>\corrections.jsonl" --batch "<BATCH_JSONL>"'
+    '--replace-from <ROW_INDEX> --expected-corrections-sha256 "<CURRENT_CORRECTIONS_SHA256>"'
+    'python -X utf8 "<SKILL_DIR>\scripts\review_corrections.py" list --job-dir "<JOB_DIR>"'
+    'python -X utf8 "<SKILL_DIR>\scripts\review_corrections.py" record --job-dir "<JOB_DIR>" --finding-id "<FINDING_ID>" --decision confirmed --note "<REVIEW_NOTE>"'
     'python -X utf8 "<SKILL_DIR>\scripts\finalize_transcript.py" --job-dir "<JOB_DIR>" --output-root "<DIR>" --status complete'
     'correction-audit.json'
-    '--acknowledge-high-risk'
+    'correction-reviews.json'
 )
 foreach ($needle in $required) {
     if (-not $skill.Contains($needle)) {
@@ -90,7 +94,7 @@ $promotionalRequired = @(
     'yt-dlp -> FFmpeg -> FSMN-VAD -> SenseVoiceSmall',
     'b23.tv',
     'bili2233.cn',
-    '58',
+    '73',
     '46',
     '2026-08-14',
     'Star',
@@ -125,6 +129,8 @@ if ($readme.Contains('one video/page per invocation')) {
 $functionHeading = '## ' + [char]0x529F + [char]0x80FD
 $firstRunHeading = '## ' + [char]0x9996 + [char]0x6B21 + [char]0x8FD0 + [char]0x884C
 $automaticDownloadClaim = [string][char]0x81EA + [char]0x52A8 + [char]0x4E0B + [char]0x8F7D + [char]0x4E94 + [char]0x4E2A
+$aclReaders = '"\u5f53\u524d Windows \u7528\u6237\u3001SYSTEM \u548c Administrators"' | ConvertFrom-Json
+$resumeOverclaim = '"\u4e0b\u8f7d\u3001\u8f6c\u7801\u3001VAD\u3001ASR \u548c\u6821\u8ba2\u90fd\u6709\u53ef\u6062\u590d\u72b6\u6001"' | ConvertFrom-Json
 foreach ($needle in @(
     $functionHeading,
     $firstRunHeading,
@@ -140,9 +146,13 @@ foreach ($needle in @(
     '372 MiB',
     '700 MiB',
     '$skill-installer',
+    '--repo jiangweiqi001/bilibili-transcript-refiner --path . --name bilibili-transcript-refiner',
     '$HOME/.agents/skills',
     $automaticDownloadClaim,
     '%PUBLIC%\bilibili-transcript-refiner\users\<user-key>\runtime-v1'
+    $aclReaders
+    '-RuntimeRoot $runtimeRoot'
+    '--runtime-root $runtimeRoot'
 )) {
     if (-not $readme.Contains($needle)) {
         throw "missing README contract: $needle"
@@ -185,7 +195,7 @@ if (-not $bootstrap.Contains('System.Diagnostics.ProcessStartInfo') -or
 
 $preparePath = Join-Path $repo 'scripts/prepare_transcript.py'
 $prepare = Get-Content -LiteralPath $preparePath -Raw -Encoding utf8
-foreach ($needle in @('runtime_fingerprint', '_provenance_fingerprint', 'same_runtime')) {
+foreach ($needle in @('runtime_fingerprint', 'media_fingerprint', '_provenance_fingerprint', 'same_runtime')) {
     if (-not $prepare.Contains($needle)) {
         throw "missing provenance-bound resume contract: $needle"
     }
@@ -270,8 +280,12 @@ $workflowRequired = @(
     '--status incomplete',
     'run the whole workflow without approval pauses',
     'checkpoint_corrections.py',
+    'review_corrections.py',
     'correction-audit.json',
-    '--acknowledge-high-risk',
+    'correction-reviews.json',
+    'source_audio_sha256',
+    'normalized_wav_sha256',
+    'correction_high_risk_reviewed',
     'yt_dlp_sha256',
     'ffprobe_sha256',
     'vad_model_revision'
@@ -283,6 +297,12 @@ foreach ($needle in $workflowRequired) {
 }
 if ($workflow.Contains('Append accepted rows to `corrections.jsonl` atomically')) {
     throw 'workflow must not instruct direct correction checkpoint append'
+}
+if ($workflow.Contains('--acknowledge-high-risk')) {
+    throw 'workflow must not expose the obsolete global high-risk acknowledgement'
+}
+if ($readme.Contains($resumeOverclaim)) {
+    throw 'README must not overstate operation-level resume support'
 }
 
 $workflowPath = Join-Path $repo '.github/workflows/test.yml'

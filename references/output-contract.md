@@ -45,6 +45,14 @@ python -X utf8 "<SKILL_DIR>\scripts\checkpoint_corrections.py" --raw "<RAW_JSONL
 
 The helper validates the full existing prefix and next timestamps, atomically replaces the checkpoint, and writes `correction-audit.json` in the runtime job directory. Never edit the authoritative checkpoint directly.
 
+To revise an accepted row, write a replacement batch beginning at that row and use the current audit hash:
+
+```powershell
+python -X utf8 "<SKILL_DIR>\scripts\checkpoint_corrections.py" --raw "<RAW_JSONL>" --checkpoint "<JOB_DIR>\corrections.jsonl" --batch "<BATCH_JSONL>" --replace-from <ROW_INDEX> --expected-corrections-sha256 "<CURRENT_CORRECTIONS_SHA256>"
+```
+
+List current high-risk findings and their exact clips with `review_corrections.py list`. Record every acoustically confirmed finding separately; `correction-reviews.json` is valid only for the current raw and correction hashes.
+
 ## Corrected Markdown
 
 Render this fixed shape:
@@ -59,6 +67,8 @@ uploader: "UP主"
 duration: "00:32:16.000"
 generated_at: "2026-08-14T12:34:56.000000Z"
 raw_transcript_sha256: "<SHA-256>"
+source_audio_sha256: "<SHA-256>"
+normalized_wav_sha256: "<SHA-256>"
 asr_model: "SenseVoiceSmall"
 asr_model_revision: "90c1c61912018b70ada0fcc024ea24aca62f2e63"
 asr_model_sha256: "<SHA-256>"
@@ -76,7 +86,8 @@ vad_model_version: "6840bae"
 vad_model_revision: "6840bae4c5c92ee8c04faaf4db23dd0105098d7f"
 vad_model_sha256: "<SHA-256>"
 correction_high_risk_count: 0
-correction_high_risk_acknowledged: false
+correction_high_risk_reviewed_count: 0
+correction_high_risk_reviewed: false
 correction_mode: "faithful"
 status: "complete"
 ---
@@ -101,5 +112,5 @@ Use `status: "incomplete"` when reliable correction cannot cover the full record
 - Match every corrected row to one raw row.
 - List every `[疑似：…]` and `[听不清]` marker in `## 存疑处`.
 - Ensure the formal directory contains no third file.
-- Review `correction-audit.json`. Do not pass `--acknowledge-high-risk` unless every high-risk row was replayed and confirmed against audio.
+- Review `correction-audit.json`; every high-risk `finding_id` must have a current confirmed record in `correction-reviews.json`.
 - Declare completion only after the finalizer succeeds.

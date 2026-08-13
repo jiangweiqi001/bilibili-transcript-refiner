@@ -32,8 +32,8 @@
 - **严格忠实校订**：只修正明确的识别错误、术语、人名、断句和标点，不把口语改写成书面语。
 - **显式表达不确定性**：使用 `[疑似：候选词]` 和 `[听不清]`，不靠猜测填空。
 - **原始证据不可变**：成功生成的 `raw-transcript.jsonl` 不会为了迎合校订结果而被覆盖。
-- **断点续跑**：下载、转码、VAD、ASR 和校订都有可恢复状态；VAD 与 ASR 检查点绑定运行时指纹，模型或执行文件变化后会重算，避免混用新旧证据。
-- **校订风险审计**：自动标记数字、完整日期、金额、拉丁标识符的增删与换序，以及大段删除和重写，未经复听确认不会静默放行。
+- **可恢复执行**：已完成的下载、转码和 VAD 结果会复用，ASR 与校订按段保存 checkpoint；中断在单次下载、转码或 VAD 操作内部时，该次操作会重跑，而不是承诺字节级续传。
+- **校订风险审计**：自动标记数字、完整日期、金额、拉丁标识符的增删与换序，以及大段删除和重写；每条高风险发现都绑定当前原稿、校订稿和对应音频片段，未经逐条复听记录不会放行。
 - **进程不会无限卡住**：下载、工具启动和 ASR 子进程都有可调超时；超时后保留任务状态，可以继续运行。
 - **安全完成检查**：只有原始哈希、逐段对应关系、时间戳和存疑项全部通过校验，才会生成正式校订稿。
 
@@ -60,8 +60,8 @@
 | 一行原始记录对应一行校订状态 | 不容易漏段、乱序或悄悄删句 |
 | ASR 在本地运行 | 音频处理和语音识别不依赖云端 ASR 服务 |
 | 自动准备运行环境 | 用户不需要预装 yt-dlp、FFmpeg、FunASR 或模型 |
-| 模型固定到不可变 commit，归档和解压后 EXE 都校验 SHA-256，缓存绑定运行时指纹，正式稿记录完整运行时摘要 | 降低上游漂移、本地损坏、运行文件被替换或新旧缓存混用带来的不确定性 |
-| 中文 Windows 用户名兼容 | 自动选择按用户隔离的 ASCII 运行路径 |
+| 模型固定到不可变 commit，使用前重算 EXE/模型 SHA-256，缓存绑定 WAV、VAD 与运行时指纹，正式稿记录音频和运行时摘要 | 降低上游漂移、本地损坏、运行文件被替换或新旧缓存混用带来的不确定性 |
+| 中文 Windows 用户名兼容 | 自动选择 ASCII 路径，并用 Windows ACL 隔离当前用户的模型、音频和任务状态 |
 | 正式目录只有两个文件 | 模型、音频、日志和中间状态不会污染交付目录 |
 | 每周检查远端资产元数据 | 上游文件变化会在 GitHub Actions 中暴露 |
 
@@ -100,14 +100,22 @@ raw-transcript.jsonl + corrected-transcript.md
 
 ### 方法一：让 Codex 安装
 
-在 Codex 中告诉 `$skill-installer` 从这个仓库安装：
+这个 Skill 位于仓库根目录，因此要把 `path` 明确设为 `.`，并显式给出安装名：
 
 ```text
-请使用 $skill-installer 安装：
-https://github.com/jiangweiqi001/bilibili-transcript-refiner
+请使用 $skill-installer 从 GitHub 安装根目录 Skill：
+repo: jiangweiqi001/bilibili-transcript-refiner
+path: .
+name: bilibili-transcript-refiner
 ```
 
-这是最省事的方式，适合希望由 Codex 完成 Skill 安装的人。
+对应的 stock installer 参数是：
+
+```powershell
+python "$HOME\.codex\skills\.system\skill-installer\scripts\install-skill-from-github.py" --repo jiangweiqi001/bilibili-transcript-refiner --path . --name bilibili-transcript-refiner
+```
+
+只给仓库根 URL 而不提供 `--path .` 会被标准安装器拒绝；上面的写法可以直接执行。
 
 ### 方法二：手动克隆
 
@@ -129,11 +137,15 @@ https://www.bilibili.com/video/BV1GJ411x7h7/?p=1
 
 Codex 会运行完整流程。第一次使用时，引导脚本会自动下载并校验所需工具与模型。
 
-如果想提前准备或检查运行环境，可以从任意工作目录执行：
+如果想提前准备或检查运行环境，可以从任意工作目录执行。关键是同一个 `$runtimeRoot` 必须同时传给 bootstrap 和转写准备阶段：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "<SKILL_DIR>\scripts\bootstrap_runtime.ps1"
+$runtimeRoot = 'C:\btr-runtime'
+powershell -NoProfile -ExecutionPolicy Bypass -File "<SKILL_DIR>\scripts\bootstrap_runtime.ps1" -RuntimeRoot $runtimeRoot
+python -X utf8 "<SKILL_DIR>\scripts\prepare_transcript.py" --url "<URL>" --output-root "<DIR>" --runtime-root $runtimeRoot
 ```
+
+正常由 Skill 运行时，它会先通过 `Get-BtrDefaultRuntimeRoot` 选择一次路径，再把同一个值传给两条命令；只有默认路径不可用时才需要手动指定上面的 ASCII 私有目录。
 
 旧版本创建的 schema-v1 运行时会提示重新执行上面的引导命令。已有下载通过哈希检查时会直接复用，不会重复下载模型。
 
@@ -198,6 +210,8 @@ FunASR 要求运行路径只包含 ASCII。若 `%LOCALAPPDATA%` 含中文或其�
 
 如果公共路径也不可用，报错会提示显式传入 ASCII 路径，例如 `-RuntimeRoot C:\btr-runtime`。
 
+这个 `%PUBLIC%` 回退只是为了解决 ASCII 路径兼容，不依赖路径哈希充当权限边界。bootstrap 会在写入模型、音频或任务状态前关闭继承，只允许当前 Windows 用户、SYSTEM 和 Administrators 访问；若当前文件系统不能设置这组 ACL，会失败并要求改用私有 NTFS 运行目录。
+
 ## URL 与视频边界
 
 - 必须提供完整的 `bilibili.com/video/BV...` 地址。
@@ -234,7 +248,7 @@ FunASR 要求运行路径只包含 ASCII。若 `%LOCALAPPDATA%` 含中文或其�
 
 ### AI 会不会把数字或原意偷偷改掉？
 
-校订 checkpoint 会比较原始行和校订行，数字、完整日期、百分比、金额、拉丁标识符的内容与顺序变化，以及明显删除或大段重写都会进入 `correction-audit.json`。最终化默认拒绝未确认的高风险项；只有复听对应音频后，才允许显式确认并在正式稿元数据中留下记录。这是风险护栏，不等于自动证明语义绝对正确。
+校订 checkpoint 会比较原始行和校订行，数字、完整日期、百分比、金额、拉丁标识符的内容与顺序变化，以及明显删除或大段重写都会进入 `correction-audit.json`。工具会为每条发现返回对应 `clip_path`；复听后，确认记录按 `finding_id` 写入 `correction-reviews.json`，并绑定原稿、校订稿和音频 SHA-256。校订一旦变化，旧记录自动失效，不能靠一个全局开关批量放行。这是风险护栏，不等于自动证明语义绝对正确。
 
 ### 支持 macOS、Linux 或老 CPU 吗？
 
@@ -248,8 +262,8 @@ FunASR 要求运行路径只包含 ASCII。若 `%LOCALAPPDATA%` 含中文或其�
 
 截至 2026-08-14，这个版本已经完成：
 
-- 58 项 Python 自动化测试，并在 GitHub Actions 覆盖 Python 3.11、3.12 和 3.13。
-- Windows PowerShell 路径一致性与静态契约测试。
+- 73 项 Python 自动化测试，并在 GitHub Actions 覆盖 Python 3.11、3.12 和 3.13。
+- Windows PowerShell 路径一致性、ACL 隔离与静态契约测试。
 - 五个远端运行资产的大小和摘要核验；每周/手动 CI 还会真实安装并复验完整运行时。
 - 从空目录完成约 372 MiB 依赖下载、展开、启动检查和 `VerifyOnly` 复验。
 - 从 Skill 仓库之外处理真实 BV 视频，在中文输出路径成功生成 46 行原始逐字稿。
