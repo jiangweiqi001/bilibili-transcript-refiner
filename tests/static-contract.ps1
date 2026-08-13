@@ -70,6 +70,36 @@ if (-not (Test-Path -LiteralPath $readmePath -PathType Leaf)) {
     throw 'README.md is required for the public repository'
 }
 $readme = Get-Content -LiteralPath $readmePath -Raw -Encoding utf8
+$requiredFirstLine = [string][char]0x70B9 + [char]0x70B9 + [char]0x5173 + [char]0x6CE8 + [char]0x8C22 + [char]0x8C22 + [char]0x55B5
+$readmeFirstLine = @($readme -split "`r?`n", 2)[0]
+if ($readmeFirstLine -cne $requiredFirstLine) {
+    throw 'README first line must be exact'
+}
+$promotionalRequired = @(
+    'actions/workflows/test.yml/badge.svg',
+    'yt-dlp -> FFmpeg -> FSMN-VAD -> SenseVoiceSmall',
+    'b23.tv',
+    'bili2233.cn',
+    '44',
+    '46',
+    '2026-08-13',
+    'Star',
+    'github.com/jiangweiqi001/bilibili-transcript-refiner/issues',
+    'scripts/runtime-assets.json',
+    'references/faithful-correction.md',
+    'tests/test_prepare_transcript.py',
+    'tests/test_finalize_transcript.py',
+    'Codex token',
+    ([string][char]0x51C6 + [char]0x786E + [char]0x7387 + [char]0x662F + [char]0x591A + [char]0x5C11),
+    '{"start":"00:00:12.400","end":"00:00:18.720","text":',
+    '[00:00:12.400]',
+    'one video/page per invocation'
+)
+foreach ($needle in $promotionalRequired) {
+    if (-not $readme.Contains($needle)) {
+        throw "missing promotional README contract: $needle"
+    }
+}
 $functionHeading = '## ' + [char]0x529F + [char]0x80FD
 $firstRunHeading = '## ' + [char]0x9996 + [char]0x6B21 + [char]0x8FD0 + [char]0x884C
 $automaticDownloadClaim = [string][char]0x81EA + [char]0x52A8 + [char]0x4E0B + [char]0x8F7D + [char]0x4E94 + [char]0x4E2A
