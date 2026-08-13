@@ -19,8 +19,16 @@ def main() -> int:
     parser.add_argument("--raw", required=True, type=Path)
     parser.add_argument("--checkpoint", required=True, type=Path)
     parser.add_argument("--batch", required=True, type=Path)
+    parser.add_argument("--replace-from", type=int)
+    parser.add_argument("--expected-corrections-sha256")
     args = parser.parse_args()
-    result = install_correction_batch(args.raw, args.checkpoint, args.batch)
+    result = install_correction_batch(
+        args.raw,
+        args.checkpoint,
+        args.batch,
+        replace_from=args.replace_from,
+        expected_corrections_sha256=args.expected_corrections_sha256,
+    )
     print(json.dumps(result, ensure_ascii=False))
     return 0
 

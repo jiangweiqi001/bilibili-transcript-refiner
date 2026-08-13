@@ -11,6 +11,7 @@ from scripts.finalize_transcript import (
     finalize_transcript,
     render_corrected,
 )
+from scripts.review_corrections import list_review_findings, record_finding_review
 from scripts.transcript_contract import (
     Segment,
     exclusive_job_lock,
@@ -162,6 +163,7 @@ class FinalizationTests(unittest.TestCase):
                 "raw_path": str(self.raw),
                 "raw_sha256": sha256(self.raw),
                 "segment_count": 2,
+                "active_run": "run-0001",
                 "runtime_provenance": {
                     "yt_dlp": {"version": "2026.07.04", "sha256": "A" * 64},
                     "ffmpeg": {"version": "9.0.1", "sha256": "B" * 64},
@@ -241,7 +243,7 @@ class FinalizationTests(unittest.TestCase):
         )
         self.assertIn(f'vad_model_sha256: "{"1" * 64}"', document)
         self.assertRegex(document, r'generated_at: "\d{4}-\d{2}-\d{2}T')
-        self.assertIn("correction_high_risk_acknowledged: false", document)
+        self.assertIn("correction_high_risk_reviewed: false", document)
 
     def test_finalize_rejects_a_concurrent_job_transition(self):
         with exclusive_job_lock(self.job / "job.lock"):
@@ -288,7 +290,7 @@ class FinalizationTests(unittest.TestCase):
         self.assertEqual(len(archived), 1)
         self.assertEqual(archived[0].read_text(encoding="utf-8"), "interrupted output")
 
-    def test_high_risk_correction_requires_explicit_audio_review_acknowledgement(self):
+    def test_high_risk_correction_requires_current_finding_level_audio_reviews(self):
         self.write_corrections(
             [
                 {
@@ -311,21 +313,95 @@ class FinalizationTests(unittest.TestCase):
         manifest = json.loads((self.job / "job.json").read_text(encoding="utf-8"))
         manifest["raw_sha256"] = sha256(self.raw)
         write_json(self.job / "job.json", manifest)
+        clip = self.job / "runs" / "run-0001" / "clips" / "000000.wav"
+        clip.parent.mkdir(parents=True, exist_ok=True)
+        clip.write_bytes(b"reviewable audio")
 
-        with self.assertRaisesRegex(ValueError, "high-risk"):
+        with self.assertRaisesRegex(ValueError, "unreviewed high-risk"):
             finalize_transcript(self.job, self.output, status="complete")
 
-        corrected = finalize_transcript(
-            self.job,
-            self.output,
-            status="complete",
-            acknowledge_high_risk=True,
-        )
+        findings = list_review_findings(self.job)
+        self.assertGreaterEqual(len(findings), 1)
+        self.assertEqual(Path(findings[0]["clip_path"]), clip.resolve())
+        for finding in findings:
+            record_finding_review(
+                self.job,
+                finding["finding_id"],
+                decision="confirmed",
+                note="已对照该段音频，确认校订内容。",
+            )
+
+        corrected = finalize_transcript(self.job, self.output, status="complete")
         self.assertTrue(corrected.is_file())
+        document = corrected.read_text(encoding="utf-8")
+        self.assertIn("correction_high_risk_reviewed: true", document)
         audit = json.loads(
             (self.job / "correction-audit.json").read_text(encoding="utf-8")
         )
         self.assertGreaterEqual(audit["high_risk_count"], 1)
+
+    def test_bare_global_acknowledgement_cannot_unlock_finalization(self):
+        self.write_corrections(
+            [
+                {
+                    "start": "00:00:00.000",
+                    "end": "00:00:01.000",
+                    "text": "完全改写。",
+                    "uncertainties": [],
+                },
+                {
+                    "start": "00:00:01.200",
+                    "end": "00:00:02.200",
+                    "text": "原始二。",
+                    "uncertainties": [],
+                },
+            ]
+        )
+
+        with self.assertRaisesRegex(ValueError, "global|finding-level"):
+            finalize_transcript(
+                self.job,
+                self.output,
+                status="complete",
+                acknowledge_high_risk=True,
+            )
+
+    def test_review_records_are_invalid_after_corrections_change(self):
+        self.write_corrections(
+            [
+                {
+                    "start": "00:00:00.000",
+                    "end": "00:00:01.000",
+                    "text": "完全改写。",
+                    "uncertainties": [],
+                },
+                {
+                    "start": "00:00:01.200",
+                    "end": "00:00:02.200",
+                    "text": "原始二。",
+                    "uncertainties": [],
+                },
+            ]
+        )
+        clip = self.job / "runs" / "run-0001" / "clips" / "000000.wav"
+        clip.parent.mkdir(parents=True, exist_ok=True)
+        clip.write_bytes(b"reviewable audio")
+        for finding in list_review_findings(self.job):
+            record_finding_review(
+                self.job,
+                finding["finding_id"],
+                decision="confirmed",
+                note="已听音频。",
+            )
+
+        correction_rows = (self.job / "corrections.jsonl").read_text(encoding="utf-8")
+        (self.job / "corrections.jsonl").write_text(
+            correction_rows.replace("完全改写。", "另一种完全改写。"),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "unreviewed high-risk"):
+            finalize_transcript(self.job, self.output, status="complete")
 
 
 if __name__ == "__main__":

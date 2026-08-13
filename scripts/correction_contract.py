@@ -105,6 +105,23 @@ class RiskFinding:
         }
 
 
+def finding_id(
+    finding: RiskFinding, raw_sha256: str, corrections_sha256: str
+) -> str:
+    payload = {
+        "raw_sha256": raw_sha256.upper(),
+        "corrections_sha256": corrections_sha256.upper(),
+        "row_index": finding.row_index,
+        "code": finding.code,
+        "raw_text": finding.raw_text,
+        "corrected_text": finding.corrected_text,
+    }
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest().upper()
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -283,14 +300,21 @@ def write_audit_report(
 ) -> dict[str, object]:
     findings = audit_corrections(raw_rows, correction_rows)
     high_risk_count = sum(item.severity == "high" for item in findings)
+    raw_hash = _sha256(Path(raw_path))
+    corrections_hash = _sha256(Path(checkpoint_path))
+    finding_rows: list[dict[str, object]] = []
+    for item in findings:
+        record = item.to_record()
+        record["finding_id"] = finding_id(item, raw_hash, corrections_hash)
+        finding_rows.append(record)
     value: dict[str, object] = {
-        "schema_version": 1,
-        "raw_sha256": _sha256(Path(raw_path)),
-        "corrections_sha256": _sha256(Path(checkpoint_path)),
+        "schema_version": 2,
+        "raw_sha256": raw_hash,
+        "corrections_sha256": corrections_hash,
         "accepted_rows": len(correction_rows),
         "total_rows": len(raw_rows),
         "high_risk_count": high_risk_count,
-        "findings": [item.to_record() for item in findings],
+        "findings": finding_rows,
     }
     _write_json_atomic(Path(audit_path), value)
     return value
@@ -300,6 +324,9 @@ def install_correction_batch(
     raw_path: Path | str,
     checkpoint_path: Path | str,
     batch_path: Path | str,
+    *,
+    replace_from: int | None = None,
+    expected_corrections_sha256: str | None = None,
 ) -> dict[str, object]:
     raw_source = Path(raw_path).resolve()
     checkpoint = Path(checkpoint_path).resolve()
@@ -308,10 +335,33 @@ def install_correction_batch(
         raw_rows = read_jsonl(raw_source)
         existing = read_corrections(checkpoint) if checkpoint.is_file() else []
         validate_pairing(raw_rows, existing, allow_prefix=True)
+        if replace_from is None:
+            if expected_corrections_sha256 is not None:
+                raise ValueError(
+                    "expected corrections SHA-256 is only valid with replace_from"
+                )
+            accepted_prefix = existing
+            batch_start = len(existing)
+        else:
+            if not isinstance(replace_from, int) or isinstance(replace_from, bool):
+                raise ValueError("replace_from must be a row index")
+            if replace_from < 0 or replace_from > len(existing):
+                raise ValueError("replace_from must address the accepted correction prefix")
+            if not checkpoint.is_file() or not expected_corrections_sha256:
+                raise ValueError(
+                    "replacement requires the current expected corrections SHA-256"
+                )
+            actual_hash = _sha256(checkpoint)
+            if actual_hash != expected_corrections_sha256.upper():
+                raise ValueError(
+                    "correction checkpoint changed; expected corrections SHA-256 does not match"
+                )
+            accepted_prefix = existing[:replace_from]
+            batch_start = replace_from
         next_rows = read_corrections(batch)
         if not next_rows:
             raise ValueError("correction batch must contain at least one row")
-        remaining = raw_rows[len(existing) : len(existing) + len(next_rows)]
+        remaining = raw_rows[batch_start : batch_start + len(next_rows)]
         if len(remaining) != len(next_rows):
             raise ValueError("correction batch exceeds the remaining raw rows")
         try:
@@ -320,7 +370,7 @@ def install_correction_batch(
             raise ValueError(
                 f"correction batch must start at the next raw row: {exc}"
             ) from exc
-        accepted = [*existing, *next_rows]
+        accepted = [*accepted_prefix, *next_rows]
         write_corrections_atomic(checkpoint, accepted)
         audit = write_audit_report(
             checkpoint.parent / "correction-audit.json",
@@ -334,6 +384,7 @@ def install_correction_batch(
             "total_rows": len(raw_rows),
             "next_index": len(accepted),
             "complete": len(accepted) == len(raw_rows),
+            "replaced_from": replace_from,
             "high_risk_count": audit["high_risk_count"],
             "audit_path": str(checkpoint.parent / "correction-audit.json"),
         }

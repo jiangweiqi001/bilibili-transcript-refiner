@@ -29,6 +29,7 @@ try:
         parse_timestamp,
         read_jsonl,
     )
+    from scripts.review_corrections import validate_finding_reviews
 except ModuleNotFoundError:  # Direct execution from scripts/.
     from correction_contract import (  # type: ignore
         Correction,
@@ -46,6 +47,7 @@ except ModuleNotFoundError:  # Direct execution from scripts/.
         parse_timestamp,
         read_jsonl,
     )
+    from review_corrections import validate_finding_reviews  # type: ignore
 
 _ALLOWED_FORMAL_FILES = {"raw-transcript.jsonl", "corrected-transcript.md"}
 
@@ -106,7 +108,7 @@ def render_corrected(
     generated_at: str | None = None,
     raw_sha256: str | None = None,
     high_risk_count: int = 0,
-    high_risk_acknowledged: bool = False,
+    high_risk_reviewed_count: int = 0,
 ) -> str:
     if status not in {"complete", "incomplete"}:
         raise ValueError("status must be complete or incomplete")
@@ -175,8 +177,14 @@ def render_corrected(
                 f"vad_model_revision: {_yaml_string(vad_model['revision'])}",
                 f"vad_model_sha256: {_yaml_string(vad_model['sha256'])}",
                 f"correction_high_risk_count: {high_risk_count}",
-                "correction_high_risk_acknowledged: "
-                + ("true" if high_risk_acknowledged else "false"),
+                f"correction_high_risk_reviewed_count: {high_risk_reviewed_count}",
+                "correction_high_risk_reviewed: "
+                + (
+                    "true"
+                    if high_risk_count > 0
+                    and high_risk_reviewed_count == high_risk_count
+                    else "false"
+                ),
             ]
         )
     else:
@@ -264,22 +272,20 @@ def _finalize_transcript_locked(
     if not corrections_path.is_file():
         raise FileNotFoundError(f"correction checkpoint is missing: {corrections_path}")
     correction_rows = _read_corrections(corrections_path)
-    findings = audit_corrections(raw_rows, correction_rows)
-    high_risk_count = sum(item.severity == "high" for item in findings)
-    if high_risk_count and not acknowledge_high_risk:
+    if acknowledge_high_risk:
         raise ValueError(
-            f"{high_risk_count} high-risk correction finding(s) require audio review; "
-            "rerun with --acknowledge-high-risk only after review"
+            "global high-risk acknowledgement is no longer accepted; "
+            "record finding-level audio reviews"
         )
-    if acknowledge_high_risk and not high_risk_count:
-        raise ValueError("high-risk acknowledgement was supplied but no high-risk findings exist")
-    write_audit_report(
+    audit = write_audit_report(
         job_dir / "correction-audit.json",
         raw_path,
         corrections_path,
         raw_rows,
         correction_rows,
     )
+    high_risk_count = int(audit["high_risk_count"])
+    reviewed_count = validate_finding_reviews(job_dir, audit)
     runtime_provenance = job_value.get("runtime_provenance")
     if not isinstance(runtime_provenance, dict):
         raise ValueError(
@@ -296,7 +302,7 @@ def _finalize_transcript_locked(
         generated_at=generated_at,
         raw_sha256=actual_hash,
         high_risk_count=high_risk_count,
-        high_risk_acknowledged=acknowledge_high_risk,
+        high_risk_reviewed_count=reviewed_count,
     )
 
     _archive_owned_stale_partials(formal_dir, job_dir)
@@ -322,7 +328,10 @@ def _finalize_transcript_locked(
             "corrected_path": str(corrected_path),
             "corrected_sha256": _sha256(corrected_path),
             "correction_high_risk_count": high_risk_count,
-            "correction_high_risk_acknowledged": acknowledge_high_risk,
+            "correction_high_risk_reviewed_count": reviewed_count,
+            "correction_high_risk_reviewed": (
+                high_risk_count > 0 and reviewed_count == high_risk_count
+            ),
             "finalized_at": generated_at,
         }
     )
@@ -357,14 +366,12 @@ def main() -> int:
     parser.add_argument("--output-root", required=True, type=Path)
     parser.add_argument("--status", required=True, choices=("complete", "incomplete"))
     parser.add_argument("--incomplete-reason")
-    parser.add_argument("--acknowledge-high-risk", action="store_true")
     args = parser.parse_args()
     corrected = finalize_transcript(
         args.job_dir,
         args.output_root,
         status=args.status,
         incomplete_reason=args.incomplete_reason,
-        acknowledge_high_risk=args.acknowledge_high_risk,
     )
     print(json.dumps({"corrected_path": str(corrected)}, ensure_ascii=False))
     return 0

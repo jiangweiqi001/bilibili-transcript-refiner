@@ -1,4 +1,5 @@
 import json
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,7 @@ from scripts.correction_contract import (
     audit_corrections,
     install_correction_batch,
     read_corrections,
+    write_audit_report,
 )
 from scripts.transcript_contract import Segment, write_jsonl_atomic
 
@@ -25,6 +27,10 @@ def write_lines(path: Path, rows: list[dict[str, object]]) -> None:
 
 def correction(start: str, end: str, text: str) -> dict[str, object]:
     return {"start": start, "end": end, "text": text, "uncertainties": []}
+
+
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest().upper()
 
 
 class CorrectionCheckpointTests(unittest.TestCase):
@@ -80,6 +86,62 @@ class CorrectionCheckpointTests(unittest.TestCase):
 
         self.assertEqual(self.checkpoint.read_bytes(), before)
 
+    def test_hash_guarded_replacement_can_revise_an_accepted_suffix(self):
+        write_lines(
+            self.checkpoint,
+            [
+                correction("00:00:00.000", "00:00:01.000", "第一行有 2024 年数据。"),
+                correction("00:00:01.200", "00:00:02.200", "错误接受的第二行。"),
+                correction("00:00:02.400", "00:00:03.400", "错误接受的第三行。"),
+            ],
+        )
+        expected_hash = sha256(self.checkpoint)
+        write_lines(
+            self.batch,
+            [
+                correction("00:00:01.200", "00:00:02.200", "第二行保留 Python3。"),
+                correction("00:00:02.400", "00:00:03.400", "第三行结束。"),
+            ],
+        )
+
+        result = install_correction_batch(
+            self.raw_path,
+            self.checkpoint,
+            self.batch,
+            replace_from=1,
+            expected_corrections_sha256=expected_hash,
+        )
+
+        rows = read_corrections(self.checkpoint)
+        self.assertEqual([row.text for row in rows], [
+            "第一行有 2024 年数据。",
+            "第二行保留 Python3。",
+            "第三行结束。",
+        ])
+        self.assertEqual(result["replaced_from"], 1)
+
+    def test_replacement_rejects_a_stale_corrections_hash(self):
+        write_lines(
+            self.checkpoint,
+            [correction("00:00:00.000", "00:00:01.000", "第一行。")],
+        )
+        before = self.checkpoint.read_bytes()
+        write_lines(
+            self.batch,
+            [correction("00:00:00.000", "00:00:01.000", "修订后的第一行。")],
+        )
+
+        with self.assertRaisesRegex(ValueError, "SHA-256|changed"):
+            install_correction_batch(
+                self.raw_path,
+                self.checkpoint,
+                self.batch,
+                replace_from=0,
+                expected_corrections_sha256="0" * 64,
+            )
+
+        self.assertEqual(self.checkpoint.read_bytes(), before)
+
     def test_audit_marks_protected_tokens_deletion_and_large_rewrite(self):
         corrected = [
             Correction(0, 1000, "第一行有 2025 年数据", ()),
@@ -121,6 +183,35 @@ class CorrectionCheckpointTests(unittest.TestCase):
         findings = audit_corrections(raw, corrected)
 
         self.assertIn("protected-token-change", {item.code for item in findings})
+
+    def test_audit_report_assigns_hash_bound_deterministic_finding_ids(self):
+        write_lines(
+            self.checkpoint,
+            [
+                correction("00:00:00.000", "00:00:01.000", "第一行有 2025 年数据。"),
+            ],
+        )
+        raw = self.raw[:1]
+        corrected = read_corrections(self.checkpoint)
+
+        first = write_audit_report(
+            self.checkpoint.parent / "audit-1.json",
+            self.raw_path,
+            self.checkpoint,
+            raw,
+            corrected,
+        )
+        second = write_audit_report(
+            self.checkpoint.parent / "audit-2.json",
+            self.raw_path,
+            self.checkpoint,
+            raw,
+            corrected,
+        )
+
+        first_id = first["findings"][0]["finding_id"]
+        self.assertEqual(first_id, second["findings"][0]["finding_id"])
+        self.assertRegex(first_id, r"^[A-F0-9]{64}$")
 
 
 if __name__ == "__main__":
