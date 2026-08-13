@@ -291,7 +291,9 @@ foreach ($needle in @(
     'matrix',
     '["3.11", "3.12", "3.13"]',
     'real-runtime-smoke',
-    'actions/cache@v4',
+    'actions/checkout@v6',
+    'actions/setup-python@v6',
+    'actions/cache@v5',
     '-VerifyOnly',
     'verify-runtime-assets.ps1',
     'Runtime asset metadata'
