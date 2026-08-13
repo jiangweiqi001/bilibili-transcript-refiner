@@ -30,7 +30,10 @@ $required = @(
     '"<SKILL_DIR>\references\faithful-correction.md"'
     'powershell -NoProfile -ExecutionPolicy Bypass -File "<SKILL_DIR>\scripts\bootstrap_runtime.ps1"'
     'python -X utf8 "<SKILL_DIR>\scripts\prepare_transcript.py" --url "<URL>" --output-root "<DIR>"'
+    'python -X utf8 "<SKILL_DIR>\scripts\checkpoint_corrections.py" --raw "<RAW_JSONL>" --checkpoint "<JOB_DIR>\corrections.jsonl" --batch "<BATCH_JSONL>"'
     'python -X utf8 "<SKILL_DIR>\scripts\finalize_transcript.py" --job-dir "<JOB_DIR>" --output-root "<DIR>" --status complete'
+    'correction-audit.json'
+    '--acknowledge-high-risk'
 )
 foreach ($needle in $required) {
     if (-not $skill.Contains($needle)) {
@@ -87,9 +90,9 @@ $promotionalRequired = @(
     'yt-dlp -> FFmpeg -> FSMN-VAD -> SenseVoiceSmall',
     'b23.tv',
     'bili2233.cn',
-    '44',
+    '58',
     '46',
-    '2026-08-13',
+    '2026-08-14',
     'Star',
     'github.com/jiangweiqi001/bilibili-transcript-refiner/issues',
     'scripts/runtime-assets.json',
@@ -157,6 +160,9 @@ $bootstrapRequired = @(
     'Get-FileHash',
     'runtime-assets.json',
     'Get-RuntimeAsset',
+    'DownloadTimeoutSeconds',
+    'StartupTimeoutSeconds',
+    'ExpectedFiles',
     'Invoke-StartupCheck -Executable $ffprobe'
     'Invoke-StartupCheck -Executable $vad'
 )
@@ -168,8 +174,32 @@ foreach ($needle in $bootstrapRequired) {
 if ($bootstrap -match 'Write-Output\s+"(?:verified|installed|downloading|expanded)') {
     throw 'bootstrap helper status must not use the success output stream'
 }
-if (-not $bootstrap.Contains('Start-Process') -or -not $bootstrap.Contains('RedirectStandardError')) {
+if (-not $bootstrap.Contains('System.Diagnostics.ProcessStartInfo') -or
+    -not $bootstrap.Contains('.WaitForExit(') -or
+    -not $bootstrap.Contains('RedirectStandardError')) {
     throw 'native startup checks must isolate expected stderr from PowerShell error handling'
+}
+
+$preparePath = Join-Path $repo 'scripts/prepare_transcript.py'
+$prepare = Get-Content -LiteralPath $preparePath -Raw -Encoding utf8
+foreach ($needle in @('runtime_fingerprint', '_provenance_fingerprint', 'same_runtime')) {
+    if (-not $prepare.Contains($needle)) {
+        throw "missing provenance-bound resume contract: $needle"
+    }
+}
+
+$licensePath = Join-Path $repo 'LICENSE'
+if (-not (Test-Path -LiteralPath $licensePath -PathType Leaf) -or
+    -not (Get-Content -LiteralPath $licensePath -Raw -Encoding utf8).Contains('MIT License')) {
+    throw 'repository MIT LICENSE is required'
+}
+$noticesPath = Join-Path $repo 'THIRD_PARTY_NOTICES.md'
+if (-not (Test-Path -LiteralPath $noticesPath -PathType Leaf)) {
+    throw 'THIRD_PARTY_NOTICES.md is required'
+}
+$notices = Get-Content -LiteralPath $noticesPath -Raw -Encoding utf8
+foreach ($needle in @('yt-dlp.exe', 'FFmpeg', 'FunASR', 'SenseVoiceSmall-GGUF', 'fsmn-vad-GGUF', 'not redistributed')) {
+    if (-not $notices.Contains($needle)) { throw "missing third-party notice: $needle" }
 }
 foreach ($needle in @(
     'Assert-RuntimeWritable',
@@ -188,8 +218,8 @@ if (-not (Test-Path -LiteralPath $assetManifestPath -PathType Leaf)) {
     throw 'scripts/runtime-assets.json is required'
 }
 $assetManifest = Get-Content -LiteralPath $assetManifestPath -Raw -Encoding utf8 | ConvertFrom-Json
-if ($assetManifest.schema_version -ne 1) {
-    throw 'runtime asset manifest schema_version must be 1'
+if ($assetManifest.schema_version -ne 2) {
+    throw 'runtime asset manifest schema_version must be 2'
 }
 $expectedAssets = @{
     yt_dlp = @('18226085', '52FE3C26DCF71FBDC85B528589020BB0B8E383155CFA81B64DD447BBE35E24B8')
@@ -210,6 +240,18 @@ foreach ($id in $expectedAssets.Keys) {
     }
 }
 
+foreach ($id in @('sensevoice', 'vad')) {
+    $asset = @($assetManifest.assets | Where-Object { $_.id -eq $id })[0]
+    if ([string]$asset.revision -notmatch '^[0-9a-f]{40}$' -or
+        -not ([string]$asset.url).Contains("/resolve/$($asset.revision)/")) {
+        throw "Hugging Face asset must use an immutable revision: $id"
+    }
+}
+foreach ($id in @('ffmpeg', 'funasr_avx2')) {
+    $asset = @($assetManifest.assets | Where-Object { $_.id -eq $id })[0]
+    if (@($asset.expanded_files).Count -ne 2) { throw "expanded file pins are required: $id" }
+}
+
 $correctionGuide = Get-Content -LiteralPath (Join-Path $repo 'references/faithful-correction.md') -Raw -Encoding utf8
 $outputGuide = Get-Content -LiteralPath (Join-Path $repo 'references/output-contract.md') -Raw -Encoding utf8
 $workflow = $skill + "`n" + $correctionGuide + "`n" + $outputGuide
@@ -223,12 +265,21 @@ $workflowRequired = @(
     'finalize_transcript.py',
     '--status complete',
     '--status incomplete',
-    'run the whole workflow without approval pauses'
+    'run the whole workflow without approval pauses',
+    'checkpoint_corrections.py',
+    'correction-audit.json',
+    '--acknowledge-high-risk',
+    'yt_dlp_sha256',
+    'ffprobe_sha256',
+    'vad_model_revision'
 )
 foreach ($needle in $workflowRequired) {
     if (-not $workflow.Contains($needle)) {
         throw "missing faithful workflow contract: $needle"
     }
+}
+if ($workflow.Contains('Append accepted rows to `corrections.jsonl` atomically')) {
+    throw 'workflow must not instruct direct correction checkpoint append'
 }
 
 $workflowPath = Join-Path $repo '.github/workflows/test.yml'
@@ -237,6 +288,11 @@ foreach ($needle in @(
     'workflow_dispatch',
     'schedule',
     'cron',
+    'matrix',
+    '["3.11", "3.12", "3.13"]',
+    'real-runtime-smoke',
+    'actions/cache@v4',
+    '-VerifyOnly',
     'verify-runtime-assets.ps1',
     'Runtime asset metadata'
 )) {
@@ -247,6 +303,11 @@ foreach ($needle in @(
 $assetVerifierPath = Join-Path $repo 'tests/verify-runtime-assets.ps1'
 if (-not (Test-Path -LiteralPath $assetVerifierPath -PathType Leaf)) {
     throw 'tests/verify-runtime-assets.ps1 is required'
+}
+$assetVerifier = Get-Content -LiteralPath $assetVerifierPath -Raw -Encoding utf8
+if (-not $assetVerifier.Contains('$env:GITHUB_TOKEN') -or
+    -not $workflowYaml.Contains('GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}')) {
+    throw 'remote GitHub asset checks must use the Actions token when available'
 }
 
 Write-Output 'static Skill contract: PASS'

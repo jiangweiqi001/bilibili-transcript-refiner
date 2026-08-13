@@ -162,6 +162,23 @@ class FinalizationTests(unittest.TestCase):
                 "raw_path": str(self.raw),
                 "raw_sha256": sha256(self.raw),
                 "segment_count": 2,
+                "runtime_provenance": {
+                    "yt_dlp": {"version": "2026.07.04", "sha256": "A" * 64},
+                    "ffmpeg": {"version": "9.0.1", "sha256": "B" * 64},
+                    "ffprobe": {"version": "9.0.1", "sha256": "C" * 64},
+                    "funasr_sensevoice": {"version": "0.1.8", "sha256": "D" * 64},
+                    "funasr_vad": {"version": "0.1.8", "sha256": "E" * 64},
+                    "sensevoice_model": {
+                        "version": "q8",
+                        "revision": "90c1c61912018b70ada0fcc024ea24aca62f2e63",
+                        "sha256": "F" * 64,
+                    },
+                    "vad_model": {
+                        "version": "main",
+                        "revision": "6840bae4c5c92ee8c04faaf4db23dd0105098d7f",
+                        "sha256": "1" * 64,
+                    },
+                },
             },
         )
         self.write_corrections(
@@ -169,13 +186,13 @@ class FinalizationTests(unittest.TestCase):
                 {
                     "start": "00:00:00.000",
                     "end": "00:00:01.000",
-                    "text": "校订一。",
+                    "text": "原始一。",
                     "uncertainties": [],
                 },
                 {
                     "start": "00:00:01.200",
                     "end": "00:00:02.200",
-                    "text": "校订二。",
+                    "text": "原始二。",
                     "uncertainties": [],
                 },
             ]
@@ -200,6 +217,31 @@ class FinalizationTests(unittest.TestCase):
             ["corrected-transcript.md", "raw-transcript.jsonl"],
         )
         self.assertNotIn(".partial-", corrected.name)
+        document = corrected.read_text(encoding="utf-8")
+        self.assertIn(f'raw_transcript_sha256: "{sha256(self.raw)}"', document)
+        self.assertIn(
+            'asr_model_revision: "90c1c61912018b70ada0fcc024ea24aca62f2e63"',
+            document,
+        )
+        self.assertIn(f'asr_model_sha256: "{"F" * 64}"', document)
+        self.assertIn('yt_dlp_version: "2026.07.04"', document)
+        self.assertIn(f'yt_dlp_sha256: "{"A" * 64}"', document)
+        self.assertIn('ffmpeg_version: "9.0.1"', document)
+        self.assertIn(f'ffmpeg_sha256: "{"B" * 64}"', document)
+        self.assertIn('ffprobe_version: "9.0.1"', document)
+        self.assertIn(f'ffprobe_sha256: "{"C" * 64}"', document)
+        self.assertIn('funasr_runtime_version: "0.1.8"', document)
+        self.assertIn(f'funasr_runtime_sha256: "{"D" * 64}"', document)
+        self.assertIn('funasr_vad_version: "0.1.8"', document)
+        self.assertIn(f'funasr_vad_sha256: "{"E" * 64}"', document)
+        self.assertIn('vad_model_version: "main"', document)
+        self.assertIn(
+            'vad_model_revision: "6840bae4c5c92ee8c04faaf4db23dd0105098d7f"',
+            document,
+        )
+        self.assertIn(f'vad_model_sha256: "{"1" * 64}"', document)
+        self.assertRegex(document, r'generated_at: "\d{4}-\d{2}-\d{2}T')
+        self.assertIn("correction_high_risk_acknowledged: false", document)
 
     def test_finalize_rejects_a_concurrent_job_transition(self):
         with exclusive_job_lock(self.job / "job.lock"):
@@ -229,6 +271,61 @@ class FinalizationTests(unittest.TestCase):
         (self.formal / "summary.md").write_text("not allowed", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "unexpected deliverable"):
             finalize_transcript(self.job, self.output, status="complete")
+
+    def test_archives_owned_stale_formal_partial_before_retrying(self):
+        stale = self.formal / "corrected-transcript.md.partial-crashed"
+        stale.write_text("interrupted output", encoding="utf-8")
+
+        corrected = finalize_transcript(self.job, self.output, status="complete")
+
+        self.assertTrue(corrected.is_file())
+        self.assertFalse(stale.exists())
+        archived = list(
+            (self.job / "archive").glob(
+                "corrected-transcript.md.partial-crashed.stale-*"
+            )
+        )
+        self.assertEqual(len(archived), 1)
+        self.assertEqual(archived[0].read_text(encoding="utf-8"), "interrupted output")
+
+    def test_high_risk_correction_requires_explicit_audio_review_acknowledgement(self):
+        self.write_corrections(
+            [
+                {
+                    "start": "00:00:00.000",
+                    "end": "00:00:01.000",
+                    "text": "2025 年校订。",
+                    "uncertainties": [],
+                },
+                {
+                    "start": "00:00:01.200",
+                    "end": "00:00:02.200",
+                    "text": "原始二。",
+                    "uncertainties": [],
+                },
+            ]
+        )
+        self.rows = [Segment(0, 1000, "2024 年原始"), self.rows[1]]
+        self.raw.unlink()
+        write_jsonl_atomic(self.raw, self.rows)
+        manifest = json.loads((self.job / "job.json").read_text(encoding="utf-8"))
+        manifest["raw_sha256"] = sha256(self.raw)
+        write_json(self.job / "job.json", manifest)
+
+        with self.assertRaisesRegex(ValueError, "high-risk"):
+            finalize_transcript(self.job, self.output, status="complete")
+
+        corrected = finalize_transcript(
+            self.job,
+            self.output,
+            status="complete",
+            acknowledge_high_risk=True,
+        )
+        self.assertTrue(corrected.is_file())
+        audit = json.loads(
+            (self.job / "correction-audit.json").read_text(encoding="utf-8")
+        )
+        self.assertGreaterEqual(audit["high_risk_count"], 1)
 
 
 if __name__ == "__main__":

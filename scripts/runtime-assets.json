@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "assets": [
     {
       "id": "yt_dlp",
@@ -23,7 +23,17 @@
       "asset_name": "ffmpeg-9.0.1-essentials_build.zip",
       "url": "https://github.com/GyanD/codexffmpeg/releases/download/9.0.1/ffmpeg-9.0.1-essentials_build.zip",
       "size": 111253802,
-      "sha256": "FEC81AE03971D9DD4BE3EBE02E263BD2EC1D789483F931BDBA5F5715E65DA2E9"
+      "sha256": "FEC81AE03971D9DD4BE3EBE02E263BD2EC1D789483F931BDBA5F5715E65DA2E9",
+      "expanded_files": [
+        {
+          "leaf": "ffmpeg.exe",
+          "sha256": "72A489ECCD008C2EC2C0A5856C5C75BC3D8BBFA90166C4566865C246445E6AA3"
+        },
+        {
+          "leaf": "ffprobe.exe",
+          "sha256": "19202B23C0043F15AD1B7BCE2344F406FD52BD6EFD8F995CE02E7392A1CEC52F"
+        }
+      ]
     },
     {
       "id": "funasr_avx2",
@@ -35,7 +45,17 @@
       "asset_name": "funasr-llamacpp-windows-x64-avx2.zip",
       "url": "https://github.com/modelscope/FunASR/releases/download/runtime-llamacpp-v0.1.8/funasr-llamacpp-windows-x64-avx2.zip",
       "size": 4916668,
-      "sha256": "717EDADDC33D26CDA60594262077A8573C52C96784FED9F4EE82CF8154A53935"
+      "sha256": "717EDADDC33D26CDA60594262077A8573C52C96784FED9F4EE82CF8154A53935",
+      "expanded_files": [
+        {
+          "leaf": "llama-funasr-sensevoice.exe",
+          "sha256": "A1B40105CD0E0956EC0F34E8787CF2FA4EB39383AAA72B82E5F97A7118F24F3C"
+        },
+        {
+          "leaf": "llama-funasr-vad.exe",
+          "sha256": "118A8CEE02927FE3DF19A7048B5E47E61CA2838197FB405BFEBE538C87B1A452"
+        }
+      ]
     },
     {
       "id": "sensevoice",
@@ -43,21 +63,21 @@
       "version": "q8",
       "provider": "huggingface",
       "repository": "FunAudioLLM/SenseVoiceSmall-GGUF",
-      "revision": "main",
+      "revision": "90c1c61912018b70ada0fcc024ea24aca62f2e63",
       "asset_name": "sensevoice-small-q8.gguf",
-      "url": "https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF/resolve/main/sensevoice-small-q8.gguf",
+      "url": "https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF/resolve/90c1c61912018b70ada0fcc024ea24aca62f2e63/sensevoice-small-q8.gguf",
       "size": 254208320,
       "sha256": "4AE45C94422DE949B387E2E0FB10D7E14E4C42C69DB30C3444ECC7D4B844B7C5"
     },
     {
       "id": "vad",
       "name": "FSMN-VAD",
-      "version": "main",
+      "version": "6840bae",
       "provider": "huggingface",
       "repository": "FunAudioLLM/fsmn-vad-GGUF",
-      "revision": "main",
+      "revision": "6840bae4c5c92ee8c04faaf4db23dd0105098d7f",
       "asset_name": "fsmn-vad.gguf",
-      "url": "https://huggingface.co/FunAudioLLM/fsmn-vad-GGUF/resolve/main/fsmn-vad.gguf",
+      "url": "https://huggingface.co/FunAudioLLM/fsmn-vad-GGUF/resolve/6840bae4c5c92ee8c04faaf4db23dd0105098d7f/fsmn-vad.gguf",
       "size": 1720512,
       "sha256": "1270F2559C495F4E7B6E739541151027D360761A3FDA43FC147034F5719F5479"
     }

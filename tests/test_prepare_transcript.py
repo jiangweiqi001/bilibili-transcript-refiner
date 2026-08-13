@@ -6,7 +6,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from scripts.prepare_transcript import _job_directory, main, prepare_transcript
+from scripts.prepare_transcript import (
+    _default_runner,
+    _job_directory,
+    _run_checked,
+    main,
+    prepare_transcript,
+)
 from scripts.transcript_contract import BilibiliTarget, exclusive_job_lock
 
 
@@ -120,7 +126,28 @@ def create_runtime(root: Path) -> Path:
         "sensevoice_model": "sensevoice-small-q8.gguf",
         "vad_model": "fsmn-vad.gguf",
     }
-    manifest = {"schema_version": 1, "runtime_root": str(root)}
+    manifest = {
+        "schema_version": 2,
+        "runtime_root": str(root),
+        "generated_at": "2026-08-14T00:00:00Z",
+        "provenance": {
+            "yt_dlp": {"version": "2026.07.04", "sha256": "A" * 64},
+            "ffmpeg": {"version": "9.0.1", "sha256": "B" * 64},
+            "ffprobe": {"version": "9.0.1", "sha256": "C" * 64},
+            "funasr_sensevoice": {"version": "0.1.8", "sha256": "D" * 64},
+            "funasr_vad": {"version": "0.1.8", "sha256": "E" * 64},
+            "sensevoice_model": {
+                "version": "q8",
+                "revision": "90c1c61912018b70ada0fcc024ea24aca62f2e63",
+                "sha256": "F" * 64,
+            },
+            "vad_model": {
+                "version": "main",
+                "revision": "6840bae4c5c92ee8c04faaf4db23dd0105098d7f",
+                "sha256": "1" * 64,
+            },
+        },
+    }
     for key, name in tool_names.items():
         path = root / "fake-runtime" / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -170,7 +197,29 @@ class PrepareTranscriptTests(unittest.TestCase):
             default_root.side_effect = AssertionError("default must stay lazy")
             self.assertEqual(main(), 0)
         default_root.assert_not_called()
-        prepare.assert_called_once_with(argv[2], self.output, explicit, rerun_asr=False)
+        prepare.assert_called_once_with(
+            argv[2],
+            self.output,
+            explicit,
+            rerun_asr=False,
+            process_timeout_seconds=1800,
+        )
+
+    def test_default_runner_passes_the_configured_timeout_to_subprocess(self):
+        completed = subprocess.CompletedProcess(["tool.exe"], 0, stdout="", stderr="")
+        with patch("scripts.prepare_transcript.subprocess.run", return_value=completed) as run:
+            result = _default_runner(["tool.exe", "--version"], timeout_seconds=7)
+        self.assertIs(result, completed)
+        self.assertEqual(run.call_args.kwargs["timeout"], 7)
+
+    def test_checked_runner_turns_timeout_into_a_labelled_recoverable_error(self):
+        def timeout_runner(args):
+            raise subprocess.TimeoutExpired(args, 9)
+
+        with self.assertRaisesRegex(
+            RuntimeError, "voice activity detection timed out after 9 seconds"
+        ):
+            _run_checked(timeout_runner, ["vad.exe"], "voice activity detection")
 
     def test_prepares_timestamped_raw_evidence(self):
         runner = FakeRunner()
@@ -191,6 +240,10 @@ class PrepareTranscriptTests(unittest.TestCase):
             ],
         )
         self.assertEqual(result.job_manifest["state"], "asr_complete")
+        self.assertEqual(
+            result.job_manifest["runtime_provenance"]["sensevoice_model"]["revision"],
+            "90c1c61912018b70ada0fcc024ea24aca62f2e63",
+        )
         self.assertTrue(result.job_dir.resolve().is_relative_to(self.runtime.resolve()))
         self.assertTrue(all(ord(character) < 128 for character in str(result.job_dir)))
 
@@ -485,6 +538,75 @@ class PrepareTranscriptTests(unittest.TestCase):
         ]
         self.assertEqual(len(sense_commands), 1)
         self.assertTrue(result.raw_path.exists())
+
+    def test_runtime_change_starts_fresh_run_and_recomputes_vad_and_asr(self):
+        first_runner = FakeRunner(empty_second_segment=True)
+        with self.assertRaisesRegex(ValueError, "empty ASR text"):
+            prepare_transcript(
+                "https://www.bilibili.com/video/BV1rnGt61E4j/",
+                self.output,
+                self.runtime,
+                runner=first_runner,
+            )
+        job = _job_directory(
+            self.runtime, self.output, BilibiliTarget("BV1rnGt61E4j")
+        )
+        interrupted = json.loads((job / "job.json").read_text(encoding="utf-8"))
+        runtime_path = self.runtime / "runtime.json"
+        runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+        runtime["provenance"]["funasr_sensevoice"]["sha256"] = "2" * 64
+        runtime["provenance"]["funasr_vad"]["sha256"] = "3" * 64
+        runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
+
+        resumed_runner = FakeRunner()
+        completed = prepare_transcript(
+            "https://www.bilibili.com/video/BV1rnGt61E4j/",
+            self.output,
+            self.runtime,
+            runner=resumed_runner,
+        )
+
+        executables = [Path(command[0]).name.lower() for command in resumed_runner.commands]
+        self.assertNotEqual(completed.job_manifest["active_run"], interrupted["active_run"])
+        self.assertEqual(executables.count("llama-funasr-vad.exe"), 1)
+        self.assertEqual(executables.count("llama-funasr-sensevoice.exe"), 2)
+        vad = json.loads((job / "vad.json").read_text(encoding="utf-8"))
+        self.assertEqual(vad["schema_version"], 2)
+        self.assertRegex(vad["runtime_fingerprint"], r"^[A-F0-9]{64}$")
+
+    def test_corrupt_segment_checkpoint_is_quarantined_and_recomputed(self):
+        runner = FakeRunner(empty_second_segment=True)
+        with self.assertRaisesRegex(ValueError, "empty ASR text"):
+            prepare_transcript(
+                "https://www.bilibili.com/video/BV1rnGt61E4j/",
+                self.output,
+                self.runtime,
+                runner=runner,
+            )
+        job = _job_directory(
+            self.runtime, self.output, BilibiliTarget("BV1rnGt61E4j")
+        )
+        checkpoint = job / "runs" / "run-0001" / "segments" / "000000.json"
+        checkpoint.write_text("{truncated", encoding="utf-8")
+
+        resumed_runner = FakeRunner()
+        result = prepare_transcript(
+            "https://www.bilibili.com/video/BV1rnGt61E4j/",
+            self.output,
+            self.runtime,
+            runner=resumed_runner,
+        )
+
+        sense_commands = [
+            command
+            for command in resumed_runner.commands
+            if Path(command[0]).name.lower() == "llama-funasr-sensevoice.exe"
+        ]
+        quarantined = list((checkpoint.parent / "quarantine").glob("000000.invalid-*.json"))
+        self.assertEqual(len(sense_commands), 2)
+        self.assertEqual(len(quarantined), 1)
+        self.assertEqual(quarantined[0].read_text(encoding="utf-8"), "{truncated")
+        self.assertTrue(result.raw_path.is_file())
 
     def test_explicit_rerun_archives_old_raw_outside_formal_output(self):
         first = prepare_transcript(

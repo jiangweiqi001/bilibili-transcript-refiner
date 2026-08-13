@@ -37,6 +37,14 @@ For an uncertain span, list every visible marker:
 
 Do not change timestamps or row count. The finalizer rejects a changed raw-file hash.
 
+Install each next block through the deterministic checkpoint helper:
+
+```powershell
+python -X utf8 "<SKILL_DIR>\scripts\checkpoint_corrections.py" --raw "<RAW_JSONL>" --checkpoint "<JOB_DIR>\corrections.jsonl" --batch "<BATCH_JSONL>"
+```
+
+The helper validates the full existing prefix and next timestamps, atomically replaces the checkpoint, and writes `correction-audit.json` in the runtime job directory. Never edit the authoritative checkpoint directly.
+
 ## Corrected Markdown
 
 Render this fixed shape:
@@ -49,7 +57,26 @@ page: 1
 title: "视频标题"
 uploader: "UP主"
 duration: "00:32:16.000"
+generated_at: "2026-08-14T12:34:56.000000Z"
+raw_transcript_sha256: "<SHA-256>"
 asr_model: "SenseVoiceSmall"
+asr_model_revision: "90c1c61912018b70ada0fcc024ea24aca62f2e63"
+asr_model_sha256: "<SHA-256>"
+yt_dlp_version: "2026.07.04"
+yt_dlp_sha256: "<SHA-256>"
+ffmpeg_version: "9.0.1"
+ffmpeg_sha256: "<SHA-256>"
+ffprobe_version: "9.0.1"
+ffprobe_sha256: "<SHA-256>"
+funasr_runtime_version: "0.1.8"
+funasr_runtime_sha256: "<SHA-256>"
+funasr_vad_version: "0.1.8"
+funasr_vad_sha256: "<SHA-256>"
+vad_model_version: "6840bae"
+vad_model_revision: "6840bae4c5c92ee8c04faaf4db23dd0105098d7f"
+vad_model_sha256: "<SHA-256>"
+correction_high_risk_count: 0
+correction_high_risk_acknowledged: false
 correction_mode: "faithful"
 status: "complete"
 ---
@@ -74,4 +101,5 @@ Use `status: "incomplete"` when reliable correction cannot cover the full record
 - Match every corrected row to one raw row.
 - List every `[疑似：…]` and `[听不清]` marker in `## 存疑处`.
 - Ensure the formal directory contains no third file.
+- Review `correction-audit.json`. Do not pass `--acknowledge-high-risk` unless every high-risk row was replayed and confirmed against audio.
 - Declare completion only after the finalizer succeeds.

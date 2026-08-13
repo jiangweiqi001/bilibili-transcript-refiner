@@ -32,7 +32,9 @@
 - **严格忠实校订**：只修正明确的识别错误、术语、人名、断句和标点，不把口语改写成书面语。
 - **显式表达不确定性**：使用 `[疑似：候选词]` 和 `[听不清]`，不靠猜测填空。
 - **原始证据不可变**：成功生成的 `raw-transcript.jsonl` 不会为了迎合校订结果而被覆盖。
-- **断点续跑**：下载、转码、VAD、ASR 和校订都有可恢复状态，长视频中断后无需全部重来。
+- **断点续跑**：下载、转码、VAD、ASR 和校订都有可恢复状态；VAD 与 ASR 检查点绑定运行时指纹，模型或执行文件变化后会重算，避免混用新旧证据。
+- **校订风险审计**：自动标记数字、完整日期、金额、拉丁标识符的增删与换序，以及大段删除和重写，未经复听确认不会静默放行。
+- **进程不会无限卡住**：下载、工具启动和 ASR 子进程都有可调超时；超时后保留任务状态，可以继续运行。
 - **安全完成检查**：只有原始哈希、逐段对应关系、时间戳和存疑项全部通过校验，才会生成正式校订稿。
 
 校订规则不是隐藏提示词：可以直接查看 [`references/faithful-correction.md`](references/faithful-correction.md) 和 [`references/output-contract.md`](references/output-contract.md)。依赖版本、下载地址、文件大小与 SHA-256 则集中记录在 [`scripts/runtime-assets.json`](scripts/runtime-assets.json)。
@@ -58,7 +60,7 @@
 | 一行原始记录对应一行校订状态 | 不容易漏段、乱序或悄悄删句 |
 | ASR 在本地运行 | 音频处理和语音识别不依赖云端 ASR 服务 |
 | 自动准备运行环境 | 用户不需要预装 yt-dlp、FFmpeg、FunASR 或模型 |
-| 所有资产固定版本并校验 SHA-256 | 降低下载漂移或文件损坏带来的不确定性 |
+| 模型固定到不可变 commit，归档和解压后 EXE 都校验 SHA-256，缓存绑定运行时指纹，正式稿记录完整运行时摘要 | 降低上游漂移、本地损坏、运行文件被替换或新旧缓存混用带来的不确定性 |
 | 中文 Windows 用户名兼容 | 自动选择按用户隔离的 ASCII 运行路径 |
 | 正式目录只有两个文件 | 模型、音频、日志和中间状态不会污染交付目录 |
 | 每周检查远端资产元数据 | 上游文件变化会在 GitHub Actions 中暴露 |
@@ -76,7 +78,7 @@ yt-dlp -> FFmpeg -> FSMN-VAD -> SenseVoiceSmall
 Codex 按上下文逐段忠实校订
         |
         v
-哈希、行数、时间戳、存疑标记与目录结构校验
+哈希、行数、时间戳、存疑标记、校订风险与目录结构校验
         |
         v
 raw-transcript.jsonl + corrected-transcript.md
@@ -133,6 +135,8 @@ Codex 会运行完整流程。第一次使用时，引导脚本会自动下载�
 powershell -NoProfile -ExecutionPolicy Bypass -File "<SKILL_DIR>\scripts\bootstrap_runtime.ps1"
 ```
 
+旧版本创建的 schema-v1 运行时会提示重新执行上面的引导命令。已有下载通过哈希检查时会直接复用，不会重复下载模型。
+
 ## 使用示例
 
 下面的文字仅用于展示文件格式，不代表特定视频的真实转写结果。
@@ -182,7 +186,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<SKILL_DIR>\scripts\bootstr
 - CPU 支持 AVX2、FMA、F16C 和 BMI2。
 - 首次安装时能够访问 GitHub 和 Hugging Face；处理视频时能够访问 Bilibili。
 
-不需要预装音频转文字模型。首次运行会自动下载五个经过 SHA-256 校验的固定依赖，传输约 372 MiB，安装后约占 700 MiB；视频、音频和任务缓存不包含在这个数字内。
+不需要预装音频转文字模型。首次运行会自动下载五个固定依赖，传输约 372 MiB，安装后约占 700 MiB；下载归档、模型文件和实际执行的 EXE 都会核对 SHA-256，模型 URL 固定到不可变 commit。视频、音频和任务缓存不包含在这个数字内。
 
 ### 中文 Windows 用户名
 
@@ -228,6 +232,10 @@ FunASR 要求运行路径只包含 ASCII。若 `%LOCALAPPDATA%` 含中文或其�
 
 不能。B 站登录状态、地区限制、付费权限、视频删除和反滥用策略都可能影响下载。项目会保留任务状态并给出失败信息，但不会绕过访问权限。
 
+### AI 会不会把数字或原意偷偷改掉？
+
+校订 checkpoint 会比较原始行和校订行，数字、完整日期、百分比、金额、拉丁标识符的内容与顺序变化，以及明显删除或大段重写都会进入 `correction-audit.json`。最终化默认拒绝未确认的高风险项；只有复听对应音频后，才允许显式确认并在正式稿元数据中留下记录。这是风险护栏，不等于自动证明语义绝对正确。
+
 ### 支持 macOS、Linux 或老 CPU 吗？
 
 当前公开版本只验证 Windows 10/11 x64，并要求 AVX2、FMA、F16C 和 BMI2。其他平台与非 AVX2 CPU 暂不在支持范围内。
@@ -238,11 +246,11 @@ FunASR 要求运行路径只包含 ASCII。若 `%LOCALAPPDATA%` 含中文或其�
 
 ## 验证状态
 
-截至 2026-08-13，这个版本已经完成：
+截至 2026-08-14，这个版本已经完成：
 
-- 44 项 Python 自动化测试。
+- 58 项 Python 自动化测试，并在 GitHub Actions 覆盖 Python 3.11、3.12 和 3.13。
 - Windows PowerShell 路径一致性与静态契约测试。
-- 五个远端运行资产的大小和摘要核验，并加入每周 GitHub Actions。
+- 五个远端运行资产的大小和摘要核验；每周/手动 CI 还会真实安装并复验完整运行时。
 - 从空目录完成约 372 MiB 依赖下载、展开、启动检查和 `VerifyOnly` 复验。
 - 从 Skill 仓库之外处理真实 BV 视频，在中文输出路径成功生成 46 行原始逐字稿。
 
@@ -257,3 +265,7 @@ FunASR 要求运行路径只包含 ASCII。若 `%LOCALAPPDATA%` 含中文或其�
 - 遇到可复现问题，请提交 [GitHub Issue](https://github.com/jiangweiqi001/bilibili-transcript-refiner/issues)，附上 Windows 版本、Python 版本、完整 BV 链接和报错信息。
 
 项目地址：<https://github.com/jiangweiqi001/bilibili-transcript-refiner>
+
+## 许可证与第三方组件
+
+本仓库代码和文档采用 [MIT License](LICENSE)。yt-dlp、FFmpeg、FunASR 和两份 GGUF 模型由引导脚本从上游下载，不随本仓库重新分发，并继续受各自许可证约束；版本、来源和条款链接见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。

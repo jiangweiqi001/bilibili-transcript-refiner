@@ -5,7 +5,7 @@ Add-Type -AssemblyName System.Net.Http
 $repo = Split-Path -Parent $PSScriptRoot
 $manifestPath = Join-Path $repo 'scripts/runtime-assets.json'
 $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding utf8 | ConvertFrom-Json
-if ($manifest.schema_version -ne 1) {
+if ($manifest.schema_version -ne 2) {
     throw 'unsupported runtime asset manifest'
 }
 
@@ -25,6 +25,9 @@ function Get-HeaderValue {
 $githubHeaders = @{
     'User-Agent' = 'bilibili-transcript-refiner-asset-check'
     Accept = 'application/vnd.github+json'
+}
+if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) {
+    $githubHeaders.Authorization = "Bearer $env:GITHUB_TOKEN"
 }
 $handler = [System.Net.Http.HttpClientHandler]::new()
 $handler.AllowAutoRedirect = $false

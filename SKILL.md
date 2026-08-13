@@ -22,8 +22,8 @@ Support Windows only. Process one video/page per invocation. For multipart URLs,
 3. Run `powershell -NoProfile -ExecutionPolicy Bypass -File "<SKILL_DIR>\scripts\bootstrap_runtime.ps1"`. Keep its SenseVoiceSmall model, tools, jobs, and audio outside the requested output root.
 4. Run `python -X utf8 "<SKILL_DIR>\scripts\prepare_transcript.py" --url "<URL>" --output-root "<DIR>"`. Read `job_dir` from its JSON output. Do not use `--rerun-asr` unless the user explicitly asks to replace successful ASR evidence.
 5. Read [references/faithful-correction.md](references/faithful-correction.md) completely from `"<SKILL_DIR>\references\faithful-correction.md"`.
-6. Correct the job's raw segments chronologically and checkpoint `corrections.jsonl` atomically in the job directory after each block. Resume at the first missing correction row; keep earlier accepted rows unchanged. Preserve one correction row per raw row and identical timestamps. If explicit ASR replacement changed the raw hash, archive the old correction state outside the formal output and start correction again.
-7. Run `python -X utf8 "<SKILL_DIR>\scripts\finalize_transcript.py" --job-dir "<JOB_DIR>" --output-root "<DIR>" --status complete` only after every row is corrected and every uncertainty marker is listed. Use `--status incomplete --incomplete-reason "<REASON>"` when audio quality prevents a reliable full result.
+6. Correct the job's raw segments chronologically in blocks. Write only the next block to a temporary `<BATCH_JSONL>`, then run `python -X utf8 "<SKILL_DIR>\scripts\checkpoint_corrections.py" --raw "<RAW_JSONL>" --checkpoint "<JOB_DIR>\corrections.jsonl" --batch "<BATCH_JSONL>"`. Never append to or edit the authoritative checkpoint directly. Resume from the returned `next_index`; keep earlier accepted rows unchanged. Read `<JOB_DIR>\correction-audit.json` after every block and replay every high-risk row against audio. If explicit ASR replacement changed the raw hash, archive the old correction state outside the formal output and start correction again.
+7. Run `python -X utf8 "<SKILL_DIR>\scripts\finalize_transcript.py" --job-dir "<JOB_DIR>" --output-root "<DIR>" --status complete` only after every row is corrected, every uncertainty marker is listed, and the audit has no unresolved high-risk finding. If a flagged change was verified against audio and intentionally retained, add `--acknowledge-high-risk`; never add it merely to bypass the audit. Use `--status incomplete --incomplete-reason "<REASON>"` when audio quality prevents a reliable full result.
 8. Validate that the formal directory contains exactly `raw-transcript.jsonl` and `corrected-transcript.md`, then report both paths.
 
 ## Non-negotiable fidelity
@@ -42,3 +42,4 @@ Keep `raw-transcript.jsonl` immutable. Never present partial output as a complet
 - Do not overwrite raw evidence to make it resemble the correction.
 - Do not add a summary, outline, teaching note, or content analysis.
 - Do not guess a technical term merely because it makes the sentence smoother.
+- Do not acknowledge a number, date, money value, identifier, major deletion, or large rewrite without replaying that row.

@@ -70,7 +70,9 @@ class PreparationResult:
     reused: bool = False
 
 
-def _default_runner(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+def _default_runner(
+    args: Sequence[str], *, timeout_seconds: int = 1800
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [str(item) for item in args],
         capture_output=True,
@@ -78,11 +80,18 @@ def _default_runner(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
         encoding="utf-8",
         errors="replace",
         check=False,
+        timeout=timeout_seconds,
     )
 
 
 def _run_checked(runner: Runner, args: Sequence[str], label: str):
-    result = runner([str(item) for item in args])
+    command = [str(item) for item in args]
+    try:
+        result = runner(command)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"{label} timed out after {exc.timeout:g} seconds; job state was preserved for resume"
+        ) from exc
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
         raise RuntimeError(f"{label} failed with exit code {result.returncode}: {detail}")
@@ -125,7 +134,17 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest().upper()
 
 
-def _load_runtime(runtime_root: Path) -> dict[str, str]:
+def _provenance_fingerprint(
+    provenance: dict[str, object], keys: Sequence[str]
+) -> str:
+    selected = {key: provenance[key] for key in keys}
+    payload = json.dumps(
+        selected, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    ).encode("ascii")
+    return hashlib.sha256(payload).hexdigest().upper()
+
+
+def _load_runtime(runtime_root: Path) -> tuple[dict[str, str], dict[str, object]]:
     runtime_root = runtime_root.resolve()
     _ensure_ascii(runtime_root)
     manifest_path = runtime_root / "runtime.json"
@@ -134,15 +153,39 @@ def _load_runtime(runtime_root: Path) -> dict[str, str]:
             f"runtime manifest is missing; run bootstrap_runtime.ps1 first: {manifest_path}"
         )
     manifest = _read_json(manifest_path)
-    if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
-        raise ValueError("runtime manifest has an unsupported schema")
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != 2:
+        raise ValueError(
+            "runtime manifest has an unsupported schema; rerun bootstrap_runtime.ps1"
+        )
     resolved: dict[str, str] = {}
     for key in _RUNTIME_KEYS:
         value = manifest.get(key)
         if not isinstance(value, str) or not Path(value).is_file():
             raise ValueError(f"runtime manifest has an invalid {key} path")
         resolved[key] = value
-    return resolved
+    provenance = manifest.get("provenance")
+    required_provenance = {
+        "yt_dlp",
+        "ffmpeg",
+        "ffprobe",
+        "funasr_sensevoice",
+        "funasr_vad",
+        "sensevoice_model",
+        "vad_model",
+    }
+    if not isinstance(provenance, dict) or set(provenance) != required_provenance:
+        raise ValueError("runtime manifest provenance is incomplete; rerun bootstrap_runtime.ps1")
+    for key, value in provenance.items():
+        if not isinstance(value, dict) or not isinstance(value.get("version"), str):
+            raise ValueError(f"runtime provenance is invalid for {key}")
+        digest = value.get("sha256")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9A-Fa-f]{64}", digest):
+            raise ValueError(f"runtime provenance SHA-256 is invalid for {key}")
+        if key in {"sensevoice_model", "vad_model"} and not re.fullmatch(
+            r"[0-9a-f]{40}", str(value.get("revision", ""))
+        ):
+            raise ValueError(f"runtime provenance revision is invalid for {key}")
+    return resolved, provenance
 
 
 def _page_was_defaulted(url: str) -> bool:
@@ -361,17 +404,22 @@ def _load_or_run_vad(
     wav_duration_ms: int,
     job_dir: Path,
     runtime: dict[str, str],
+    runtime_provenance: dict[str, object],
     runner: Runner,
 ) -> list[tuple[int, int]]:
     path = job_dir / "vad.json"
     wav_sha256 = _sha256(wav)
+    runtime_fingerprint = _provenance_fingerprint(
+        runtime_provenance, ("funasr_vad", "vad_model")
+    )
     if path.is_file():
         value = _read_json(path)
         if (
             isinstance(value, dict)
-            and value.get("schema_version") == 1
+            and value.get("schema_version") == 2
             and value.get("wav_sha256") == wav_sha256
             and value.get("wav_duration_ms") == wav_duration_ms
+            and value.get("runtime_fingerprint") == runtime_fingerprint
             and isinstance(value.get("spans"), list)
         ):
             spans = [
@@ -399,9 +447,10 @@ def _load_or_run_vad(
     _write_json_atomic(
         path,
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "wav_sha256": wav_sha256,
             "wav_duration_ms": wav_duration_ms,
+            "runtime_fingerprint": runtime_fingerprint,
             "spans": [
                 {"start_ms": start, "end_ms": end} for start, end in spans
             ],
@@ -411,17 +460,41 @@ def _load_or_run_vad(
 
 
 def _load_segment_checkpoint(
-    path: Path, expected_start: int, expected_end: int
+    path: Path,
+    expected_start: int,
+    expected_end: int,
+    runtime_fingerprint: str,
 ) -> Segment | None:
     if not path.is_file():
         return None
-    value = _read_json(path)
-    if not isinstance(value, dict):
-        raise ValueError(f"invalid segment checkpoint: {path}")
-    segment = Segment(int(value["start_ms"]), int(value["end_ms"]), value["text"])
-    if (segment.start_ms, segment.end_ms) != (expected_start, expected_end):
-        raise ValueError(f"segment checkpoint boundaries changed: {path}")
-    return segment
+    try:
+        value = _read_json(path)
+        if not isinstance(value, dict) or set(value) != {
+            "schema_version",
+            "runtime_fingerprint",
+            "start_ms",
+            "end_ms",
+            "text",
+        }:
+            raise ValueError(f"invalid segment checkpoint: {path}")
+        if (
+            value.get("schema_version") != 2
+            or value.get("runtime_fingerprint") != runtime_fingerprint
+        ):
+            raise ValueError(f"segment checkpoint runtime changed: {path}")
+        segment = Segment(int(value["start_ms"]), int(value["end_ms"]), value["text"])
+        if (segment.start_ms, segment.end_ms) != (expected_start, expected_end):
+            raise ValueError(f"segment checkpoint boundaries changed: {path}")
+        return segment
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+        quarantine = path.parent / "quarantine"
+        quarantine.mkdir(parents=True, exist_ok=True)
+        target = quarantine / (
+            f"{path.stem}.invalid-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-"
+            f"{uuid.uuid4().hex[:8]}{path.suffix}"
+        )
+        shutil.move(str(path), str(target))
+        return None
 
 
 def _transcribe_segments(
@@ -429,6 +502,7 @@ def _transcribe_segments(
     spans: list[tuple[int, int]],
     run_dir: Path,
     runtime: dict[str, str],
+    runtime_provenance: dict[str, object],
     runner: Runner,
 ) -> list[Segment]:
     clips = run_dir / "clips"
@@ -436,10 +510,15 @@ def _transcribe_segments(
     clips.mkdir(parents=True, exist_ok=True)
     checkpoints.mkdir(parents=True, exist_ok=True)
     rows: list[Segment] = []
+    runtime_fingerprint = _provenance_fingerprint(
+        runtime_provenance, ("ffmpeg", "funasr_sensevoice", "sensevoice_model")
+    )
 
     for index, (start_ms, end_ms) in enumerate(spans):
         checkpoint = checkpoints / f"{index:06d}.json"
-        existing = _load_segment_checkpoint(checkpoint, start_ms, end_ms)
+        existing = _load_segment_checkpoint(
+            checkpoint, start_ms, end_ms, runtime_fingerprint
+        )
         if existing is not None:
             rows.append(existing)
             continue
@@ -487,6 +566,8 @@ def _transcribe_segments(
         _write_json_atomic(
             checkpoint,
             {
+                "schema_version": 2,
+                "runtime_fingerprint": runtime_fingerprint,
                 "start_ms": segment.start_ms,
                 "end_ms": segment.end_ms,
                 "text": segment.text,
@@ -541,7 +622,7 @@ def _prepare_transcript_locked(
     target = parse_bilibili_url(url)
     page_defaulted = _page_was_defaulted(url)
     runtime_root = Path(runtime_root).resolve()
-    runtime = _load_runtime(runtime_root)
+    runtime, runtime_provenance = _load_runtime(runtime_root)
     formal_dir = Path(output_root).resolve() / output_name(target.bvid, target.page)
     raw_path = formal_dir / "raw-transcript.jsonl"
     job_dir = _job_directory(runtime_root, Path(output_root), target)
@@ -576,6 +657,10 @@ def _prepare_transcript_locked(
             raise ValueError(
                 "existing raw transcript predates media-duration validation; request an explicit ASR rerun"
             )
+        if not isinstance(manifest.get("runtime_provenance"), dict):
+            raise ValueError(
+                "existing raw transcript predates runtime provenance; request an explicit ASR rerun"
+            )
         manifest_raw_path = Path(str(manifest.get("raw_path", ""))).resolve()
         if manifest_raw_path != raw_path.resolve():
             raise ValueError(
@@ -601,20 +686,29 @@ def _prepare_transcript_locked(
         target, job_dir, runtime, runner, page_defaulted
     )
     old_manifest = _read_json(manifest_path) if manifest_path.is_file() else {}
+    same_runtime = (
+        isinstance(old_manifest, dict)
+        and old_manifest.get("runtime_provenance") == runtime_provenance
+    )
     if rerun_asr:
         if (
             isinstance(old_manifest, dict)
             and old_manifest.get("state") == "preparing"
             and old_manifest.get("rerun_asr") is True
             and isinstance(old_manifest.get("active_run"), str)
+            and same_runtime
         ):
             active_run = old_manifest["active_run"]
         else:
             active_run = _new_run_id()
-    elif isinstance(old_manifest, dict) and isinstance(old_manifest.get("active_run"), str):
+    elif (
+        isinstance(old_manifest, dict)
+        and isinstance(old_manifest.get("active_run"), str)
+        and same_runtime
+    ):
         active_run = old_manifest["active_run"]
     else:
-        active_run = "run-0001"
+        active_run = _new_run_id() if old_manifest else "run-0001"
 
     manifest: dict[str, object] = {
         "schema_version": 1,
@@ -624,6 +718,7 @@ def _prepare_transcript_locked(
         "rerun_asr": rerun_asr,
         "active_run": active_run,
         "output_dir": str(formal_dir),
+        "runtime_provenance": runtime_provenance,
     }
     _write_json_atomic(manifest_path, manifest)
     expected_duration_ms = int(metadata["duration_ms"])
@@ -631,10 +726,12 @@ def _prepare_transcript_locked(
         target, job_dir, runtime, runner, expected_duration_ms
     )
     spans = _load_or_run_vad(
-        wav, wav_duration_ms, job_dir, runtime, runner
+        wav, wav_duration_ms, job_dir, runtime, runtime_provenance, runner
     )
     run_dir = job_dir / "runs" / active_run
-    rows = _transcribe_segments(wav, spans, run_dir, runtime, runner)
+    rows = _transcribe_segments(
+        wav, spans, run_dir, runtime, runtime_provenance, runner
+    )
     validate_coverage(spans, rows)
 
     if raw_path.is_file() and rerun_asr:
@@ -668,19 +765,27 @@ def prepare_transcript(
     output_root: Path | str,
     runtime_root: Path | str,
     *,
-    runner: Runner = _default_runner,
+    runner: Runner | None = None,
     rerun_asr: bool = False,
+    process_timeout_seconds: int = 1800,
 ) -> PreparationResult:
+    if process_timeout_seconds <= 0:
+        raise ValueError("process timeout must be a positive number of seconds")
     target = parse_bilibili_url(url)
     runtime_path = Path(runtime_root).resolve()
     job_dir = _job_directory(runtime_path, Path(output_root), target)
     _ensure_ascii(job_dir)
+    selected_runner = runner or (
+        lambda command: _default_runner(
+            command, timeout_seconds=process_timeout_seconds
+        )
+    )
     with exclusive_job_lock(job_dir / "job.lock"):
         return _prepare_transcript_locked(
             url,
             output_root,
             runtime_root,
-            runner=runner,
+            runner=selected_runner,
             rerun_asr=rerun_asr,
         )
 
@@ -693,6 +798,7 @@ def main() -> int:
     parser.add_argument("--output-root", required=True, type=Path)
     parser.add_argument("--runtime-root", type=Path)
     parser.add_argument("--rerun-asr", action="store_true")
+    parser.add_argument("--process-timeout-seconds", type=int, default=1800)
     args = parser.parse_args()
     runtime_root = (
         args.runtime_root if args.runtime_root is not None else default_runtime_root()
@@ -702,6 +808,7 @@ def main() -> int:
         args.output_root,
         runtime_root,
         rerun_asr=args.rerun_asr,
+        process_timeout_seconds=args.process_timeout_seconds,
     )
     print(
         json.dumps(

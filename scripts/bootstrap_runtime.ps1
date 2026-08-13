@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [string]$RuntimeRoot,
-    [switch]$VerifyOnly
+    [switch]$VerifyOnly,
+    [ValidateRange(1, 86400)][int]$DownloadTimeoutSeconds = 1800,
+    [ValidateRange(1, 3600)][int]$StartupTimeoutSeconds = 120
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,7 +17,7 @@ if ([string]::IsNullOrWhiteSpace($RuntimeRoot)) {
 
 $assetManifestPath = Join-Path $PSScriptRoot 'runtime-assets.json'
 $assetManifest = Get-Content -LiteralPath $assetManifestPath -Raw -Encoding utf8 | ConvertFrom-Json
-if ($assetManifest.schema_version -ne 1) {
+if ($assetManifest.schema_version -ne 2) {
     throw "Unsupported runtime asset manifest: $assetManifestPath"
 }
 
@@ -121,7 +123,7 @@ function Ensure-Asset {
     Assert-UnderRoot -Root $RuntimeRoot -Path $partial
     Write-Host "downloading: $Name"
     try {
-        Invoke-WebRequest -Uri $Url -OutFile $partial -UseBasicParsing
+        Invoke-WebRequest -Uri $Url -OutFile $partial -UseBasicParsing -TimeoutSec $DownloadTimeoutSeconds
     } catch {
         throw "Failed to download $Name. Check internet, proxy, and TLS access. Partial file: $partial. $($_.Exception.Message)"
     }
@@ -136,26 +138,36 @@ function Ensure-ExpandedArchive {
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][string]$Archive,
         [Parameter(Mandatory = $true)][string]$Destination,
-        [Parameter(Mandatory = $true)][string]$RequiredLeaf
+        [Parameter(Mandatory = $true)][object[]]$ExpectedFiles
     )
     Assert-UnderRoot -Root $RuntimeRoot -Path $Destination
-    $existing = Get-ChildItem -LiteralPath $Destination -Filter $RequiredLeaf -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -ne $existing) {
-        Write-Host "verified package: $Name"
-        return
-    }
-    if ($VerifyOnly) {
-        throw "Package is not expanded or lacks ${RequiredLeaf}: $Destination"
-    }
-    if (Test-Path -LiteralPath $Destination) {
-        Move-InvalidAside -Path $Destination
+    if (Test-Path -LiteralPath $Destination -PathType Container) {
+        try {
+            foreach ($expected in $ExpectedFiles) {
+                $matches = @(Get-ChildItem -LiteralPath $Destination -Filter $expected.leaf -File -Recurse -ErrorAction Stop)
+                if ($matches.Count -ne 1) {
+                    throw "Expanded $Name must contain exactly one $($expected.leaf)"
+                }
+                Assert-Hash -Path $matches[0].FullName -Expected $expected.sha256
+            }
+            Write-Host "verified package: $Name"
+            return
+        } catch {
+            if ($VerifyOnly) { throw }
+            Move-InvalidAside -Path $Destination
+        }
+    } elseif ($VerifyOnly) {
+        throw "Package is not expanded: $Destination"
     }
     $partial = "$Destination.partial-$([Guid]::NewGuid().ToString('N'))"
     Assert-UnderRoot -Root $RuntimeRoot -Path $partial
     Expand-Archive -LiteralPath $Archive -DestinationPath $partial
-    $required = Get-ChildItem -LiteralPath $partial -Filter $RequiredLeaf -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -eq $required) {
-        throw "Expanded $Name archive does not contain $RequiredLeaf; preserved at $partial"
+    foreach ($expected in $ExpectedFiles) {
+        $matches = @(Get-ChildItem -LiteralPath $partial -Filter $expected.leaf -File -Recurse -ErrorAction Stop)
+        if ($matches.Count -ne 1) {
+            throw "Expanded $Name archive must contain exactly one $($expected.leaf); preserved at $partial"
+        }
+        Assert-Hash -Path $matches[0].FullName -Expected $expected.sha256
     }
     Move-Item -LiteralPath $partial -Destination $Destination
     Write-Host "expanded: $Name"
@@ -182,12 +194,33 @@ function Invoke-StartupCheck {
     $stem = [IO.Path]::GetFileNameWithoutExtension($Executable)
     $stdout = Join-Path $checkDirectory "$stem.stdout.txt"
     $stderr = Join-Path $checkDirectory "$stem.stderr.txt"
-    $process = Start-Process -FilePath $Executable -ArgumentList $Arguments `
-        -NoNewWindow -Wait -PassThru `
-        -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-    if ($process.ExitCode -notin $AllowedExitCodes) {
-        $detail = Get-Content -LiteralPath $stderr -Raw -ErrorAction SilentlyContinue
-        throw "Runtime startup check failed for $Executable with exit code $($process.ExitCode): $detail"
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $Executable
+    $startInfo.Arguments = $Arguments -join ' '
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) {
+            throw "Runtime startup check could not start $Executable"
+        }
+        if (-not $process.WaitForExit($StartupTimeoutSeconds * 1000)) {
+            $process.Kill()
+            throw "Runtime startup check timed out after $StartupTimeoutSeconds seconds for $Executable"
+        }
+        $standardOutput = $process.StandardOutput.ReadToEnd()
+        $standardError = $process.StandardError.ReadToEnd()
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        [IO.File]::WriteAllText($stdout, $standardOutput, $utf8)
+        [IO.File]::WriteAllText($stderr, $standardError, $utf8)
+        if ($process.ExitCode -notin $AllowedExitCodes) {
+            throw "Runtime startup check failed for $Executable with exit code $($process.ExitCode): $standardError"
+        }
+    } finally {
+        $process.Dispose()
     }
 }
 
@@ -233,8 +266,8 @@ $vadModel = Ensure-Asset -Name $vadAsset.name `
 
 $ffmpegPackage = Join-Path $packages 'ffmpeg-9.0.1'
 $funasrPackage = Join-Path $packages 'funasr-v0.1.8-avx2'
-Ensure-ExpandedArchive -Name 'FFmpeg 9.0.1 essentials' -Archive $ffmpegArchive -Destination $ffmpegPackage -RequiredLeaf 'ffmpeg.exe'
-Ensure-ExpandedArchive -Name 'FunASR llama.cpp runtime v0.1.8 AVX2' -Archive $funasrArchive -Destination $funasrPackage -RequiredLeaf 'llama-funasr-sensevoice.exe'
+Ensure-ExpandedArchive -Name 'FFmpeg 9.0.1 essentials' -Archive $ffmpegArchive -Destination $ffmpegPackage -ExpectedFiles @($ffmpegAsset.expanded_files)
+Ensure-ExpandedArchive -Name 'FunASR llama.cpp runtime v0.1.8 AVX2' -Archive $funasrArchive -Destination $funasrPackage -ExpectedFiles @($funasrAsset.expanded_files)
 
 $ffmpeg = Find-One -Root $ffmpegPackage -Leaf 'ffmpeg.exe'
 $ffprobe = Find-One -Root $ffmpegPackage -Leaf 'ffprobe.exe'
@@ -252,8 +285,9 @@ try {
 }
 
 $manifest = [ordered]@{
-    schema_version = 1
+    schema_version = 2
     runtime_root = $RuntimeRoot
+    generated_at = [DateTime]::UtcNow.ToString('o')
     yt_dlp = $ytDlp
     ffmpeg = $ffmpeg
     ffprobe = $ffprobe
@@ -261,9 +295,18 @@ $manifest = [ordered]@{
     funasr_vad = $vad
     sensevoice_model = $sensevoiceModel
     vad_model = $vadModel
+    provenance = [ordered]@{
+        yt_dlp = [ordered]@{ version = $ytDlpAsset.version; sha256 = $ytDlpAsset.sha256; source_url = $ytDlpAsset.url }
+        ffmpeg = [ordered]@{ version = $ffmpegAsset.version; sha256 = (Get-Sha256 -Path $ffmpeg); source_url = $ffmpegAsset.url }
+        ffprobe = [ordered]@{ version = $ffmpegAsset.version; sha256 = (Get-Sha256 -Path $ffprobe); source_url = $ffmpegAsset.url }
+        funasr_sensevoice = [ordered]@{ version = $funasrAsset.version; sha256 = (Get-Sha256 -Path $sensevoice); source_url = $funasrAsset.url }
+        funasr_vad = [ordered]@{ version = $funasrAsset.version; sha256 = (Get-Sha256 -Path $vad); source_url = $funasrAsset.url }
+        sensevoice_model = [ordered]@{ version = $sensevoiceAsset.version; revision = $sensevoiceAsset.revision; sha256 = $sensevoiceAsset.sha256; source_url = $sensevoiceAsset.url }
+        vad_model = [ordered]@{ version = $vadAsset.version; revision = $vadAsset.revision; sha256 = $vadAsset.sha256; source_url = $vadAsset.url }
+    }
 }
 $manifestPath = Join-Path $RuntimeRoot 'runtime.json'
 $manifestPartial = "$manifestPath.partial-$([Guid]::NewGuid().ToString('N'))"
-$manifest | ConvertTo-Json | Set-Content -LiteralPath $manifestPartial -Encoding utf8
+$manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifestPartial -Encoding utf8
 Move-Item -LiteralPath $manifestPartial -Destination $manifestPath -Force
 Write-Output "runtime ready: $manifestPath"

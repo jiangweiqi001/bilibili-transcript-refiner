@@ -27,7 +27,10 @@ Treat the recording as the authority and the raw ASR as immutable evidence. Corr
 3. Preserve exactly one corrected row and the same `start`/`end` for every raw row.
 4. Compare each proposed change with the raw wording. Revert any change that is stylistic rather than corrective.
 5. Inspect or replay the time range when audio inspection is available. Otherwise try nearby segment boundaries or additional ASR context, then retain an uncertainty marker.
-6. Append accepted rows to `corrections.jsonl` atomically. Resume at the first missing correction row, and do not regenerate accepted earlier rows merely to make them stylistically consistent.
+6. Write only the next accepted block to a temporary JSONL batch. Run `checkpoint_corrections.py` to validate it against the first missing raw row and atomically replace the authoritative `corrections.jsonl`. Resume at the first missing correction row, and do not regenerate accepted earlier rows merely to make them stylistically consistent.
+7. Read `correction-audit.json` after every checkpoint. Replay rows flagged for protected-token changes, major deletion, or large rewrite. Revise an unjustified change; retain a justified change only after acoustic review.
+
+Never append to or edit `corrections.jsonl` directly. The checkpoint tool validates the complete accepted prefix, exact timestamps, marker accounting, and atomic installation.
 
 ## Uncertainty
 
@@ -35,6 +38,7 @@ Treat the recording as the authority and the raw ASR as immutable evidence. Corr
 - Use `[听不清]` when there is no reliable candidate.
 - Keep the marker exactly where the uncertain speech occurs.
 - Add one concise note for each marker, including alternatives only when genuinely plausible.
+- Do not use finalizer `--acknowledge-high-risk` unless every reported high-risk row was replayed and confirmed. If audio inspection is unavailable, never claim acoustic verification; keep the raw reading or use an uncertainty marker instead.
 
 ## Calibration example
 
