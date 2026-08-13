@@ -26,12 +26,8 @@ Treat the recording as the authority and the raw ASR as immutable evidence. Corr
 2. Carry a small amount of preceding text plus a rolling list of established names and terms.
 3. Preserve exactly one corrected row and the same `start`/`end` for every raw row.
 4. Compare each proposed change with the raw wording. Revert any change that is stylistic rather than corrective.
-5. Inspect or replay the time range when audio inspection is available. Otherwise try nearby segment boundaries or additional ASR context, then retain an uncertainty marker.
-6. Write only the next accepted block to a temporary JSONL batch. Run `checkpoint_corrections.py` to validate it against the first missing raw row and atomically replace the authoritative `corrections.jsonl`. Resume at the first missing correction row, and do not regenerate accepted earlier rows merely to make them stylistically consistent.
-7. Read `correction-audit.json` after every checkpoint. For an unjustified finding in an accepted row, build a replacement batch starting at that row and call `checkpoint_corrections.py` with `--replace-from <ROW_INDEX> --expected-corrections-sha256 "<CURRENT_CORRECTIONS_SHA256>"`. This is the only supported way to revise the accepted suffix; the hash guard prevents overwriting concurrent work.
-8. Run `review_corrections.py list --job-dir "<JOB_DIR>"` and replay each returned `clip_path`. After acoustic confirmation, record each retained finding by its own `finding_id`; the helper stores the exact raw, corrections, and clip hashes in `correction-reviews.json`.
-
-Never append to or edit `corrections.jsonl` directly. The checkpoint tool validates the complete accepted prefix, exact timestamps, marker accounting, and atomic installation.
+5. Inspect or replay the time range when audio inspection is available. If it is not, try nearby segment boundaries or additional ASR context, then retain an uncertainty marker when needed.
+6. Keep accepted earlier wording stable unless new evidence requires a correction; do not regenerate it merely for stylistic consistency.
 
 ## Uncertainty
 
@@ -39,7 +35,9 @@ Never append to or edit `corrections.jsonl` directly. The checkpoint tool valida
 - Use `[听不清]` when there is no reliable candidate.
 - Keep the marker exactly where the uncertain speech occurs.
 - Add one concise note for each marker, including alternatives only when genuinely plausible.
-- If audio inspection is unavailable, never claim acoustic verification or create a review record; keep the raw reading or use an uncertainty marker instead.
+- A local `[疑似：X]` or `[听不清]` marker inside otherwise meaningful text may remain in a `complete` transcript after every other gate passes.
+- A whole-row substitution consisting of a single `[听不清]`, with only ordinary Unicode whitespace or punctuation around it, is an abstention: it forces `incomplete` and does not need—and must not invent—an audio review for that informational finding. Letters, numbers, Han characters, emoji, mathematical or currency symbols, control or zero-width characters, `[疑似：…]`, or any other semantic content make the row ineligible for this exception.
+- If audio inspection is unavailable, never claim acoustic verification or create a review record; keep the raw reading, use a local uncertainty marker, or use the strict whole-row abstention when no speech in that row can be recovered reliably.
 
 ## Calibration example
 

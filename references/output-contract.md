@@ -9,7 +9,9 @@ raw-transcript.jsonl
 corrected-transcript.md
 ```
 
-Keep metadata, audio, clips, corrections, logs, archives, and partial files in the runtime job directory.
+Persistent intermediate state, including metadata, audio, clips, corrections, logs, and archives, belongs under the runtime root, normally inside its job directory.
+
+Atomic writers may briefly create owned `.partial-*` files beside their target, including in the formal directory. Only the corrected-transcript finalizer's own stale formal partial is quarantined on retry; do not generalize that behavior to other partial files. After successful finalization, the formal directory still contains exactly the two files above.
 
 ## Raw evidence
 
@@ -19,7 +21,7 @@ Write UTF-8 JSON Lines with keys in this order and no additional keys:
 {"start":"00:00:12.400","end":"00:00:18.720","text":"模型原始识别文字"}
 ```
 
-Use global `HH:MM:SS.mmm` timestamps. Require increasing, non-overlapping, nonempty segments. Remove only SenseVoice control tags such as `<|zh|>`; otherwise keep the recognized text byte-for-byte. Never edit a successfully installed raw file.
+Use global `HH:MM:SS.mmm` timestamps. Require increasing, non-overlapping, nonempty segments. During preparation, remove SenseVoice control tags such as `<|zh|>` and trim surrounding whitespace; preserve all remaining recognized text unchanged. Never edit a successfully installed raw file.
 
 ## Correction work state
 
@@ -45,13 +47,41 @@ python -X utf8 "<SKILL_DIR>\scripts\checkpoint_corrections.py" --raw "<RAW_JSONL
 
 The helper validates the full existing prefix and next timestamps, atomically replaces the checkpoint, and writes `correction-audit.json` in the runtime job directory. Never edit the authoritative checkpoint directly.
 
+Resume at the first missing correction row. Keep earlier accepted rows unchanged unless the audit identifies a correction that needs replacement.
+
 To revise an accepted row, write a replacement batch beginning at that row and use the current audit hash:
 
 ```powershell
 python -X utf8 "<SKILL_DIR>\scripts\checkpoint_corrections.py" --raw "<RAW_JSONL>" --checkpoint "<JOB_DIR>\corrections.jsonl" --batch "<BATCH_JSONL>" --replace-from <ROW_INDEX> --expected-corrections-sha256 "<CURRENT_CORRECTIONS_SHA256>"
 ```
 
-List current high-risk findings and their exact clips with `review_corrections.py list`. Record every acoustically confirmed finding separately; `correction-reviews.json` is valid only for the current raw and correction hashes.
+## Review timing
+
+During batching, refresh and read `correction-audit.json` after every checkpoint. Use its findings to revise unjustified corrections, but do not list or record reviews yet.
+
+Only after the checkpoint helper reports `"complete": true`, every replacement is finished, and `corrections.jsonl` is stable, list current high-risk findings and their exact clips:
+
+```powershell
+python -X utf8 "<SKILL_DIR>\scripts\review_corrections.py" list --job-dir "<JOB_DIR>"
+```
+
+Replay each returned `clip_path`, then record every intentionally retained finding separately:
+
+```powershell
+python -X utf8 "<SKILL_DIR>\scripts\review_corrections.py" record --job-dir "<JOB_DIR>" --finding-id "<FINDING_ID>" --decision confirmed --note "<REVIEW_NOTE>"
+```
+
+Review records are bound to the current raw, clip, and correction hashes. Any later checkpoint append or replacement changes the SHA-256 of the entire corrections file, invalidates all recorded reviews, and requires repeating the final review pass.
+
+## Status semantics
+
+Both `complete` and `incomplete` require one timestamp-matched correction row for every raw row; `incomplete` is not a correction prefix.
+
+A local `[疑似：…]` or `[听不清]` marker inside otherwise meaningful text may still be `complete` after every other gate passes.
+
+A whole-row substitution consisting of a single `[听不清]`, with only ordinary Unicode whitespace or punctuation around it, must be `incomplete`; it is an abstention and may proceed without a fabricated audio review for that informational finding. Letters, numbers, Han characters, emoji, mathematical or currency symbols, control or zero-width characters, `[疑似：…]`, or extra semantic content make the row an ordinary correction instead. Other high-risk findings in an incomplete result still require a current confirmed audio review.
+
+Use `status: "incomplete"` when reliable correction cannot be claimed for the full recording, and add a prominent explanation immediately below the fidelity notice. Local uncertainty alone does not force this status; the strict whole-row abstention does.
 
 ## Corrected Markdown
 
@@ -105,12 +135,12 @@ status: "complete"
 - [00:01:42.000] `[疑似：遍历性]`：也可能是“保测性”，音频不足以确认。
 ```
 
-Use `status: "incomplete"` when reliable correction cannot cover the full recording, and add a prominent explanation immediately below the fidelity notice. When there are no uncertainties, write `- 无` under `## 存疑处`.
+When there are no uncertainties, write `- 无` under `## 存疑处`.
 
 ## Completion checks
 
-- Match every corrected row to one raw row.
+- For either status, match every raw row to exactly one correction with the same timestamps.
 - List every `[疑似：…]` and `[听不清]` marker in `## 存疑处`.
 - Ensure the formal directory contains no third file.
-- Review `correction-audit.json`; every high-risk `finding_id` must have a current confirmed record in `correction-reviews.json`.
+- Wait for a complete, stable checkpoint before the final review. The strict whole-row `[听不清]` informational finding needs no fabricated review; every other current high-risk `finding_id`, including in an incomplete result, must have a current confirmed record in `correction-reviews.json`.
 - Declare completion only after the finalizer succeeds.
