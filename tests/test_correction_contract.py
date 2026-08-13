@@ -6,8 +6,10 @@ from pathlib import Path
 
 from scripts.correction_contract import (
     Correction,
+    Uncertainty,
     audit_corrections,
     install_correction_batch,
+    is_whole_row_inaudible,
     read_corrections,
     write_audit_report,
 )
@@ -164,6 +166,75 @@ class CorrectionCheckpointTests(unittest.TestCase):
         findings = audit_corrections(raw, corrected)
 
         self.assertIn("protected-token-change", {item.code for item in findings})
+
+    def test_whole_row_inaudible_marker_is_informational_not_high_risk(self):
+        raw = [Segment(0, 1000, "2025 年数据不可靠")]
+        corrected = [
+            Correction(
+                0,
+                1000,
+                " \u3000。[听不清]！ ",
+                (Uncertainty("[听不清]", "整行无法辨认"),),
+            )
+        ]
+
+        findings = audit_corrections(raw, corrected)
+
+        self.assertEqual(
+            [(item.code, item.severity) for item in findings],
+            [("explicit-inaudible-substitution", "info")],
+        )
+
+    def test_whole_row_inaudible_predicate_rejects_ineligible_content(self):
+        inaudible = Uncertainty("[听不清]", "无法辨认")
+        suspected = Uncertainty("[疑似：候选词]", "读音接近")
+        cases = [
+            ("ordinary-text", "word[听不清]", (inaudible,)),
+            ("han-text", "说明[听不清]", (inaudible,)),
+            ("number", "[听不清]2", (inaudible,)),
+            ("emoji", "[听不清]😀", (inaudible,)),
+            ("mathematical-symbol", "+[听不清]", (inaudible,)),
+            ("currency-symbol", "¥[听不清]", (inaudible,)),
+            ("control", "\t[听不清]", (inaudible,)),
+            ("zero-width", "\u200b[听不清]", (inaudible,)),
+            ("suspected-marker", "[疑似：候选词]", (suspected,)),
+            (
+                "duplicate-marker",
+                "[听不清][听不清]",
+                (inaudible,),
+            ),
+            ("missing-listed-marker", "[听不清]", ()),
+            (
+                "duplicate-listed-marker",
+                "[听不清]",
+                (inaudible, inaudible),
+            ),
+            ("mismatched-listed-marker", "[听不清]", (suspected,)),
+        ]
+
+        for name, text, uncertainties in cases:
+            with self.subTest(name=name):
+                corrected = Correction(0, 1000, text, uncertainties)
+                self.assertFalse(is_whole_row_inaudible(corrected))
+
+    def test_partial_inaudible_marker_retains_normal_high_risk_auditing(self):
+        raw = [Segment(0, 1000, "2025 年数据不可靠")]
+        corrected = [
+            Correction(
+                0,
+                1000,
+                "数据[听不清]",
+                (Uncertainty("[听不清]", "句尾无法辨认"),),
+            )
+        ]
+
+        findings = audit_corrections(raw, corrected)
+
+        self.assertNotIn(
+            "explicit-inaudible-substitution", {item.code for item in findings}
+        )
+        self.assertIn("protected-token-change", {item.code for item in findings})
+        self.assertTrue(any(item.severity == "high" for item in findings))
 
     def test_audit_detects_semantic_loss_in_a_short_non_numeric_row(self):
         raw = [Segment(0, 1000, "不要")]

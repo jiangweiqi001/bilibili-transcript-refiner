@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import unicodedata
 import uuid
 from collections import Counter
 from dataclasses import dataclass
@@ -220,12 +221,40 @@ def _content(text: str) -> str:
     return _IGNORED_CONTENT_RE.sub("", _MARKER_RE.sub("", text))
 
 
+def is_whole_row_inaudible(corrected: Correction) -> bool:
+    marker = "[听不清]"
+    if len(corrected.uncertainties) != 1:
+        return False
+    if corrected.uncertainties[0].marker != marker:
+        return False
+    if corrected.text.count(marker) != 1:
+        return False
+    surrounding = corrected.text.replace(marker, "", 1)
+    return all(
+        unicodedata.category(character).startswith(("Z", "P"))
+        for character in surrounding
+    )
+
+
 def audit_corrections(
     raw_rows: Sequence[Segment], correction_rows: Sequence[Correction]
 ) -> list[RiskFinding]:
     validate_pairing(raw_rows, correction_rows, allow_prefix=True)
     findings: list[RiskFinding] = []
     for index, (raw, corrected) in enumerate(zip(raw_rows, correction_rows)):
+        if is_whole_row_inaudible(corrected):
+            findings.append(
+                RiskFinding(
+                    index,
+                    "explicit-inaudible-substitution",
+                    "info",
+                    "entire corrected row is explicitly marked inaudible",
+                    raw.text,
+                    corrected.text,
+                )
+            )
+            continue
+
         before_tokens = _protected_tokens(raw.text)
         after_tokens = _protected_tokens(corrected.text)
         if before_tokens != after_tokens:
