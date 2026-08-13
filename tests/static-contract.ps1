@@ -92,16 +92,8 @@ $bootstrapRequired = @(
     'VerifyOnly',
     'Test-AsciiPath',
     'Get-FileHash',
-    '2026.07.04',
-    '52FE3C26DCF71FBDC85B528589020BB0B8E383155CFA81B64DD447BBE35E24B8',
-    'ffmpeg-9.0.1-essentials_build.zip',
-    'FEC81AE03971D9DD4BE3EBE02E263BD2EC1D789483F931BDBA5F5715E65DA2E9',
-    'runtime-llamacpp-v0.1.8',
-    'F2A1389658E6FB5F5F93C7BAD98B5CE100EB4811E0E3C39603E39466773B1B4C',
-    'sensevoice-small-q8.gguf',
-    '4AE45C94422DE949B387E2E0FB10D7E14E4C42C69DB30C3444ECC7D4B844B7C5',
-    'fsmn-vad.gguf',
-    '1270F2559C495F4E7B6E739541151027D360761A3FDA43FC147034F5719F5479'
+    'runtime-assets.json',
+    'Get-RuntimeAsset',
     'Invoke-StartupCheck -Executable $ffprobe'
     'Invoke-StartupCheck -Executable $vad'
 )
@@ -115,6 +107,33 @@ if ($bootstrap -match 'Write-Output\s+"(?:verified|installed|downloading|expande
 }
 if (-not $bootstrap.Contains('Start-Process') -or -not $bootstrap.Contains('RedirectStandardError')) {
     throw 'native startup checks must isolate expected stderr from PowerShell error handling'
+}
+
+$assetManifestPath = Join-Path $repo 'scripts/runtime-assets.json'
+if (-not (Test-Path -LiteralPath $assetManifestPath -PathType Leaf)) {
+    throw 'scripts/runtime-assets.json is required'
+}
+$assetManifest = Get-Content -LiteralPath $assetManifestPath -Raw -Encoding utf8 | ConvertFrom-Json
+if ($assetManifest.schema_version -ne 1) {
+    throw 'runtime asset manifest schema_version must be 1'
+}
+$expectedAssets = @{
+    yt_dlp = @('18226085', '52FE3C26DCF71FBDC85B528589020BB0B8E383155CFA81B64DD447BBE35E24B8')
+    ffmpeg = @('111253802', 'FEC81AE03971D9DD4BE3EBE02E263BD2EC1D789483F931BDBA5F5715E65DA2E9')
+    funasr_avx2 = @('4916668', '717EDADDC33D26CDA60594262077A8573C52C96784FED9F4EE82CF8154A53935')
+    sensevoice = @('254208320', '4AE45C94422DE949B387E2E0FB10D7E14E4C42C69DB30C3444ECC7D4B844B7C5')
+    vad = @('1720512', '1270F2559C495F4E7B6E739541151027D360761A3FDA43FC147034F5719F5479')
+}
+foreach ($id in $expectedAssets.Keys) {
+    $asset = @($assetManifest.assets | Where-Object { $_.id -eq $id })
+    if ($asset.Count -ne 1) { throw "runtime asset must appear once: $id" }
+    if ([string]$asset[0].size -ne $expectedAssets[$id][0]) { throw "runtime asset size changed: $id" }
+    if ([string]$asset[0].sha256 -ne $expectedAssets[$id][1]) { throw "runtime asset digest changed: $id" }
+    foreach ($field in @('name', 'version', 'provider', 'url', 'size', 'sha256')) {
+        if ([string]::IsNullOrWhiteSpace([string]$asset[0].$field)) {
+            throw "runtime asset field is missing for ${id}: $field"
+        }
+    }
 }
 
 $correctionGuide = Get-Content -LiteralPath (Join-Path $repo 'references/faithful-correction.md') -Raw -Encoding utf8

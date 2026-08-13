@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "assets": [
+    {
+      "id": "yt_dlp",
+      "name": "yt-dlp 2026.07.04",
+      "version": "2026.07.04",
+      "provider": "github",
+      "repository": "yt-dlp/yt-dlp",
+      "tag": "2026.07.04",
+      "asset_name": "yt-dlp.exe",
+      "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.07.04/yt-dlp.exe",
+      "size": 18226085,
+      "sha256": "52FE3C26DCF71FBDC85B528589020BB0B8E383155CFA81B64DD447BBE35E24B8"
+    },
+    {
+      "id": "ffmpeg",
+      "name": "FFmpeg 9.0.1 essentials",
+      "version": "9.0.1",
+      "provider": "github",
+      "repository": "GyanD/codexffmpeg",
+      "tag": "9.0.1",
+      "asset_name": "ffmpeg-9.0.1-essentials_build.zip",
+      "url": "https://github.com/GyanD/codexffmpeg/releases/download/9.0.1/ffmpeg-9.0.1-essentials_build.zip",
+      "size": 111253802,
+      "sha256": "FEC81AE03971D9DD4BE3EBE02E263BD2EC1D789483F931BDBA5F5715E65DA2E9"
+    },
+    {
+      "id": "funasr_avx2",
+      "name": "FunASR llama.cpp runtime v0.1.8 AVX2",
+      "version": "0.1.8",
+      "provider": "github",
+      "repository": "modelscope/FunASR",
+      "tag": "runtime-llamacpp-v0.1.8",
+      "asset_name": "funasr-llamacpp-windows-x64-avx2.zip",
+      "url": "https://github.com/modelscope/FunASR/releases/download/runtime-llamacpp-v0.1.8/funasr-llamacpp-windows-x64-avx2.zip",
+      "size": 4916668,
+      "sha256": "717EDADDC33D26CDA60594262077A8573C52C96784FED9F4EE82CF8154A53935"
+    },
+    {
+      "id": "sensevoice",
+      "name": "SenseVoiceSmall q8",
+      "version": "q8",
+      "provider": "huggingface",
+      "repository": "FunAudioLLM/SenseVoiceSmall-GGUF",
+      "revision": "main",
+      "asset_name": "sensevoice-small-q8.gguf",
+      "url": "https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF/resolve/main/sensevoice-small-q8.gguf",
+      "size": 254208320,
+      "sha256": "4AE45C94422DE949B387E2E0FB10D7E14E4C42C69DB30C3444ECC7D4B844B7C5"
+    },
+    {
+      "id": "vad",
+      "name": "FSMN-VAD",
+      "version": "main",
+      "provider": "huggingface",
+      "repository": "FunAudioLLM/fsmn-vad-GGUF",
+      "revision": "main",
+      "asset_name": "fsmn-vad.gguf",
+      "url": "https://huggingface.co/FunAudioLLM/fsmn-vad-GGUF/resolve/main/fsmn-vad.gguf",
+      "size": 1720512,
+      "sha256": "1270F2559C495F4E7B6E739541151027D360761A3FDA43FC147034F5719F5479"
+    }
+  ]
+}

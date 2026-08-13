@@ -8,6 +8,19 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
+$assetManifestPath = Join-Path $PSScriptRoot 'runtime-assets.json'
+$assetManifest = Get-Content -LiteralPath $assetManifestPath -Raw -Encoding utf8 | ConvertFrom-Json
+if ($assetManifest.schema_version -ne 1) {
+    throw "Unsupported runtime asset manifest: $assetManifestPath"
+}
+
+function Get-RuntimeAsset {
+    param([Parameter(Mandatory = $true)][string]$Id)
+    $matches = @($assetManifest.assets | Where-Object { $_.id -eq $Id })
+    if ($matches.Count -ne 1) { throw "Runtime asset must appear once: $Id" }
+    return $matches[0]
+}
+
 function Test-AsciiPath {
     param([Parameter(Mandatory = $true)][string]$Path)
     return -not [regex]::IsMatch($Path, '[^\x00-\x7F]')
@@ -160,26 +173,27 @@ foreach ($directory in @($downloads, $bin, $models, $packages)) {
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
 }
 
-$ytDlp = Ensure-Asset -Name 'yt-dlp 2026.07.04' `
-    -Url 'https://github.com/yt-dlp/yt-dlp/releases/download/2026.07.04/yt-dlp.exe' `
-    -Sha256 '52FE3C26DCF71FBDC85B528589020BB0B8E383155CFA81B64DD447BBE35E24B8' `
-    -Destination (Join-Path $bin 'yt-dlp.exe')
-$ffmpegArchive = Ensure-Asset -Name 'FFmpeg 9.0.1 essentials' `
-    -Url 'https://github.com/GyanD/codexffmpeg/releases/download/9.0.1/ffmpeg-9.0.1-essentials_build.zip' `
-    -Sha256 'FEC81AE03971D9DD4BE3EBE02E263BD2EC1D789483F931BDBA5F5715E65DA2E9' `
-    -Destination (Join-Path $downloads 'ffmpeg-9.0.1-essentials_build.zip')
-$funasrArchive = Ensure-Asset -Name 'FunASR llama.cpp runtime v0.1.8 AVX2' `
-    -Url 'https://github.com/modelscope/FunASR/releases/download/runtime-llamacpp-v0.1.8/funasr-llamacpp-windows-x64-avx2.zip' `
-    -Sha256 'F2A1389658E6FB5F5F93C7BAD98B5CE100EB4811E0E3C39603E39466773B1B4C' `
-    -Destination (Join-Path $downloads 'funasr-llamacpp-windows-x64-avx2.zip')
-$sensevoiceModel = Ensure-Asset -Name 'SenseVoiceSmall q8' `
-    -Url 'https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF/resolve/main/sensevoice-small-q8.gguf' `
-    -Sha256 '4AE45C94422DE949B387E2E0FB10D7E14E4C42C69DB30C3444ECC7D4B844B7C5' `
-    -Destination (Join-Path $models 'sensevoice-small-q8.gguf')
-$vadModel = Ensure-Asset -Name 'FSMN-VAD' `
-    -Url 'https://huggingface.co/FunAudioLLM/fsmn-vad-GGUF/resolve/main/fsmn-vad.gguf' `
-    -Sha256 '1270F2559C495F4E7B6E739541151027D360761A3FDA43FC147034F5719F5479' `
-    -Destination (Join-Path $models 'fsmn-vad.gguf')
+$ytDlpAsset = Get-RuntimeAsset -Id 'yt_dlp'
+$ffmpegAsset = Get-RuntimeAsset -Id 'ffmpeg'
+$funasrAsset = Get-RuntimeAsset -Id 'funasr_avx2'
+$sensevoiceAsset = Get-RuntimeAsset -Id 'sensevoice'
+$vadAsset = Get-RuntimeAsset -Id 'vad'
+
+$ytDlp = Ensure-Asset -Name $ytDlpAsset.name `
+    -Url $ytDlpAsset.url -Sha256 $ytDlpAsset.sha256 `
+    -Destination (Join-Path $bin $ytDlpAsset.asset_name)
+$ffmpegArchive = Ensure-Asset -Name $ffmpegAsset.name `
+    -Url $ffmpegAsset.url -Sha256 $ffmpegAsset.sha256 `
+    -Destination (Join-Path $downloads $ffmpegAsset.asset_name)
+$funasrArchive = Ensure-Asset -Name $funasrAsset.name `
+    -Url $funasrAsset.url -Sha256 $funasrAsset.sha256 `
+    -Destination (Join-Path $downloads $funasrAsset.asset_name)
+$sensevoiceModel = Ensure-Asset -Name $sensevoiceAsset.name `
+    -Url $sensevoiceAsset.url -Sha256 $sensevoiceAsset.sha256 `
+    -Destination (Join-Path $models $sensevoiceAsset.asset_name)
+$vadModel = Ensure-Asset -Name $vadAsset.name `
+    -Url $vadAsset.url -Sha256 $vadAsset.sha256 `
+    -Destination (Join-Path $models $vadAsset.asset_name)
 
 $ffmpegPackage = Join-Path $packages 'ffmpeg-9.0.1'
 $funasrPackage = Join-Path $packages 'funasr-v0.1.8-avx2'
