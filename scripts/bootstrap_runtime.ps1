@@ -31,6 +31,29 @@ function Test-AsciiPath {
     return -not [regex]::IsMatch($Path, '[^\x00-\x7F]')
 }
 
+function Assert-RuntimeWritable {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $probe = Join-Path $Path ('.write-probe-' + [Guid]::NewGuid().ToString('N'))
+    try {
+        [IO.File]::WriteAllText($probe, 'probe')
+        Remove-Item -LiteralPath $probe
+    } catch {
+        $detail = $_.Exception.Message
+        if (Test-Path -LiteralPath $probe -PathType Leaf) {
+            try { Remove-Item -LiteralPath $probe -ErrorAction SilentlyContinue } catch {}
+        }
+        throw "Runtime root is not writable: $Path. Pass an ASCII writable -RuntimeRoot C:\btr-runtime. $detail"
+    }
+}
+
+function Assert-FreeSpace {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $drive = (Get-Item -LiteralPath $Path).PSDrive
+    if ($null -ne $drive -and $null -ne $drive.Free -and $drive.Free -lt 1GB) {
+        throw "Runtime setup needs at least 1 GiB of free space: $Path"
+    }
+}
+
 function Assert-UnderRoot {
     param(
         [Parameter(Mandatory = $true)][string]$Root,
@@ -97,7 +120,11 @@ function Ensure-Asset {
     $partial = "$Destination.partial-$([Guid]::NewGuid().ToString('N'))"
     Assert-UnderRoot -Root $RuntimeRoot -Path $partial
     Write-Host "downloading: $Name"
-    Invoke-WebRequest -Uri $Url -OutFile $partial -UseBasicParsing
+    try {
+        Invoke-WebRequest -Uri $Url -OutFile $partial -UseBasicParsing
+    } catch {
+        throw "Failed to download $Name. Check internet, proxy, and TLS access. Partial file: $partial. $($_.Exception.Message)"
+    }
     Assert-Hash -Path $partial -Expected $Sha256
     Move-Item -LiteralPath $partial -Destination $Destination
     Write-Host "installed: $Name"
@@ -169,6 +196,10 @@ if (-not (Test-BtrAsciiPath -Path $RuntimeRoot)) {
 }
 $RuntimeRoot = [IO.Path]::GetFullPath($RuntimeRoot)
 New-Item -ItemType Directory -Path $RuntimeRoot -Force | Out-Null
+Assert-RuntimeWritable -Path $RuntimeRoot
+if (-not $VerifyOnly) {
+    Assert-FreeSpace -Path $RuntimeRoot
+}
 
 $downloads = Join-Path $RuntimeRoot 'downloads'
 $bin = Join-Path $RuntimeRoot 'bin'
@@ -213,8 +244,12 @@ $vad = Find-One -Root $funasrPackage -Leaf 'llama-funasr-vad.exe'
 Invoke-StartupCheck -Executable $ytDlp -Arguments @('--version') -AllowedExitCodes @(0)
 Invoke-StartupCheck -Executable $ffmpeg -Arguments @('-version') -AllowedExitCodes @(0)
 Invoke-StartupCheck -Executable $ffprobe -Arguments @('-version') -AllowedExitCodes @(0)
-Invoke-StartupCheck -Executable $sensevoice -Arguments @('--help') -AllowedExitCodes @(1)
-Invoke-StartupCheck -Executable $vad -Arguments @('--help') -AllowedExitCodes @(1)
+try {
+    Invoke-StartupCheck -Executable $sensevoice -Arguments @('--help') -AllowedExitCodes @(1)
+    Invoke-StartupCheck -Executable $vad -Arguments @('--help') -AllowedExitCodes @(1)
+} catch {
+    throw "FunASR AVX2 runtime could not start. This release requires a Windows x64 CPU with AVX2, FMA, F16C, and BMI2; security software may also block the executable. $($_.Exception.Message)"
+}
 
 $manifest = [ordered]@{
     schema_version = 1

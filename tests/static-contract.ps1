@@ -108,6 +108,17 @@ if ($bootstrap -match 'Write-Output\s+"(?:verified|installed|downloading|expande
 if (-not $bootstrap.Contains('Start-Process') -or -not $bootstrap.Contains('RedirectStandardError')) {
     throw 'native startup checks must isolate expected stderr from PowerShell error handling'
 }
+foreach ($needle in @(
+    'Assert-RuntimeWritable',
+    'Assert-FreeSpace',
+    'at least 1 GiB of free space',
+    'Check internet, proxy, and TLS access',
+    'AVX2, FMA, F16C, and BMI2'
+)) {
+    if (-not $bootstrap.Contains($needle)) {
+        throw "missing bootstrap diagnostic contract: $needle"
+    }
+}
 
 $assetManifestPath = Join-Path $repo 'scripts/runtime-assets.json'
 if (-not (Test-Path -LiteralPath $assetManifestPath -PathType Leaf)) {
