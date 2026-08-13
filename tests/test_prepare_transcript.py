@@ -3,8 +3,10 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from scripts.prepare_transcript import _job_directory, prepare_transcript
+from scripts.prepare_transcript import _job_directory, main, prepare_transcript
 from scripts.transcript_contract import BilibiliTarget, exclusive_job_lock
 
 
@@ -139,6 +141,36 @@ class PrepareTranscriptTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_main_does_not_evaluate_default_when_runtime_root_is_explicit(self):
+        explicit = self.base / "explicit-runtime"
+        result = SimpleNamespace(
+            job_manifest={"state": "asr_complete"},
+            raw_path=self.base / "raw.jsonl",
+            job_dir=self.base / "job",
+            page_defaulted=False,
+            reused=False,
+        )
+        argv = [
+            "prepare_transcript.py",
+            "--url",
+            "https://www.bilibili.com/video/BV1rnGt61E4j/",
+            "--output-root",
+            str(self.output),
+            "--runtime-root",
+            str(explicit),
+        ]
+        with (
+            patch("scripts.prepare_transcript.default_runtime_root") as default_root,
+            patch(
+                "scripts.prepare_transcript.prepare_transcript", return_value=result
+            ) as prepare,
+            patch("sys.argv", argv),
+        ):
+            default_root.side_effect = AssertionError("default must stay lazy")
+            self.assertEqual(main(), 0)
+        default_root.assert_not_called()
+        prepare.assert_called_once_with(argv[2], self.output, explicit, rerun_asr=False)
 
     def test_prepares_timestamped_raw_evidence(self):
         runner = FakeRunner()

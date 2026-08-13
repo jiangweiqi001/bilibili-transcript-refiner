@@ -1,12 +1,17 @@
 [CmdletBinding()]
 param(
-    [string]$RuntimeRoot = (Join-Path $env:LOCALAPPDATA 'bilibili-transcript-refiner\runtime-v1'),
+    [string]$RuntimeRoot,
     [switch]$VerifyOnly
 )
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+. (Join-Path $PSScriptRoot 'runtime_layout.ps1')
+if ([string]::IsNullOrWhiteSpace($RuntimeRoot)) {
+    $RuntimeRoot = Get-BtrDefaultRuntimeRoot
+}
 
 $assetManifestPath = Join-Path $PSScriptRoot 'runtime-assets.json'
 $assetManifest = Get-Content -LiteralPath $assetManifestPath -Raw -Encoding utf8 | ConvertFrom-Json
@@ -159,7 +164,7 @@ function Invoke-StartupCheck {
     }
 }
 
-if (-not (Test-AsciiPath -Path $RuntimeRoot)) {
+if (-not (Test-BtrAsciiPath -Path $RuntimeRoot)) {
     throw 'SenseVoice runtime paths must contain ASCII characters only. Pass -RuntimeRoot C:\btr-runtime.'
 }
 $RuntimeRoot = [IO.Path]::GetFullPath($RuntimeRoot)

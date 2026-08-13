@@ -17,6 +17,7 @@ from typing import Callable, Sequence
 from urllib.parse import parse_qs, urlparse
 
 try:
+    from scripts.runtime_layout import default_runtime_root
     from scripts.transcript_contract import (
         BilibiliTarget,
         Segment,
@@ -29,6 +30,7 @@ try:
         write_jsonl_atomic,
     )
 except ModuleNotFoundError:  # Direct execution from scripts/.
+    from runtime_layout import default_runtime_root  # type: ignore
     from transcript_contract import (  # type: ignore
         BilibiliTarget,
         Segment,
@@ -683,26 +685,22 @@ def prepare_transcript(
         )
 
 
-def _default_runtime_root() -> Path:
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if not local_app_data:
-        raise RuntimeError("LOCALAPPDATA is not defined")
-    return Path(local_app_data) / "bilibili-transcript-refiner" / "runtime-v1"
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Prepare immutable SenseVoiceSmall evidence for one Bilibili video."
     )
     parser.add_argument("--url", required=True)
     parser.add_argument("--output-root", required=True, type=Path)
-    parser.add_argument("--runtime-root", type=Path, default=_default_runtime_root())
+    parser.add_argument("--runtime-root", type=Path)
     parser.add_argument("--rerun-asr", action="store_true")
     args = parser.parse_args()
+    runtime_root = (
+        args.runtime_root if args.runtime_root is not None else default_runtime_root()
+    )
     result = prepare_transcript(
         args.url,
         args.output_root,
-        args.runtime_root,
+        runtime_root,
         rerun_asr=args.rerun_asr,
     )
     print(
