@@ -22,7 +22,7 @@ Move the public Skill from a working beta toward a distributable, resumable, and
 
 `scripts/correction_contract.py` owns correction parsing, pairing, risk detection, audit rendering, and atomic JSONL writes. `scripts/checkpoint_corrections.py` accepts `--raw`, `--checkpoint`, and `--batch`, locks the job, validates that the existing file is an exact prefix, validates that the batch starts at the first missing raw row, writes the checkpoint atomically, refreshes `correction-audit.json`, and prints progress JSON.
 
-The finalizer uses the same contract. High-risk findings fail closed by default. `--acknowledge-high-risk` is only valid when high-risk findings exist and records that acknowledgement in `job.json` and the corrected frontmatter.
+The finalizer uses the same contract and high-risk findings fail closed by default. The original v1.1 global acknowledgement design is superseded by the finding-level, hash-bound audio-review contract in `2026-08-14-must-fix-v1-1-1-design.md`.
 
 ### Runtime provenance and integrity
 

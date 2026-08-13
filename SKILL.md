@@ -19,7 +19,7 @@ Support Windows only. Process one video/page per invocation. For multipart URLs,
 
 1. Resolve the directory containing the loaded `SKILL.md` as `<SKILL_DIR>`. Never assume the shell current working directory is the Skill directory.
 2. Read [references/output-contract.md](references/output-contract.md) completely from `"<SKILL_DIR>\references\output-contract.md"`.
-3. Select one ASCII `<RUNTIME_ROOT>` and keep it for the whole job. Obtain the default by loading `"<SKILL_DIR>\scripts\runtime_layout.ps1"` and calling `Get-BtrDefaultRuntimeRoot`; if that fails, use an explicit private NTFS path such as `C:\btr-runtime`. Do not select it independently again between commands.
+3. Select one ASCII `<RUNTIME_ROOT>` and keep it for the whole job. Obtain the default with `powershell -NoProfile -Command ". '<SKILL_DIR>\scripts\runtime_layout.ps1'; Get-BtrDefaultRuntimeRoot"`; if that fails, use an explicit private NTFS path such as `C:\btr-runtime`. Do not select it independently again between commands.
 4. Run `powershell -NoProfile -ExecutionPolicy Bypass -File "<SKILL_DIR>\scripts\bootstrap_runtime.ps1" -RuntimeRoot "<RUNTIME_ROOT>"`. Keep its SenseVoiceSmall model, tools, jobs, and audio outside the requested output root.
 5. Run `python -X utf8 "<SKILL_DIR>\scripts\prepare_transcript.py" --url "<URL>" --output-root "<DIR>" --runtime-root "<RUNTIME_ROOT>"`. Read `job_dir` from its JSON output. Do not use `--rerun-asr` unless the user explicitly asks to replace successful ASR evidence.
 6. Read [references/faithful-correction.md](references/faithful-correction.md) completely from `"<SKILL_DIR>\references\faithful-correction.md"`.

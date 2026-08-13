@@ -262,7 +262,7 @@ FunASR 要求运行路径只包含 ASCII。若 `%LOCALAPPDATA%` 含中文或其�
 
 截至 2026-08-14，这个版本已经完成：
 
-- 73 项 Python 自动化测试，并在 GitHub Actions 覆盖 Python 3.11、3.12 和 3.13。
+- 74 项 Python 自动化测试，并在 GitHub Actions 覆盖 Python 3.11、3.12 和 3.13。
 - Windows PowerShell 路径一致性、ACL 隔离与静态契约测试。
 - 五个远端运行资产的大小和摘要核验；每周/手动 CI 还会真实安装并复验完整运行时。
 - 从空目录完成约 372 MiB 依赖下载、展开、启动检查和 `VerifyOnly` 复验。

@@ -383,6 +383,31 @@ class FinalizationTests(unittest.TestCase):
                 acknowledge_high_risk=True,
             )
 
+    def test_review_rejects_an_active_run_path_escape(self):
+        self.write_corrections(
+            [
+                {
+                    "start": "00:00:00.000",
+                    "end": "00:00:01.000",
+                    "text": "完全改写。",
+                    "uncertainties": [],
+                },
+                {
+                    "start": "00:00:01.200",
+                    "end": "00:00:02.200",
+                    "text": "原始二。",
+                    "uncertainties": [],
+                },
+            ]
+        )
+        manifest_path = self.job / "job.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["active_run"] = "..\\escape"
+        write_json(manifest_path, manifest)
+
+        with self.assertRaisesRegex(ValueError, "active ASR run"):
+            list_review_findings(self.job)
+
     def test_review_records_are_invalid_after_corrections_change(self):
         self.write_corrections(
             [

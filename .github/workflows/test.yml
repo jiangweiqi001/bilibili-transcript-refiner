@@ -34,6 +34,9 @@ jobs:
       - name: Runtime layout parity
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/test-runtime-layout.ps1
+      - name: Runtime ACL isolation
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/test-runtime-acl.ps1
       - name: Runtime asset metadata
         shell: powershell
         env:

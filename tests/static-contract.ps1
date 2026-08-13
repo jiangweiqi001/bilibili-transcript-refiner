@@ -94,7 +94,7 @@ $promotionalRequired = @(
     'yt-dlp -> FFmpeg -> FSMN-VAD -> SenseVoiceSmall',
     'b23.tv',
     'bili2233.cn',
-    '73',
+    '74',
     '46',
     '2026-08-14',
     'Star',
@@ -319,6 +319,7 @@ foreach ($needle in @(
     'actions/cache@v5',
     '-VerifyOnly',
     'verify-runtime-assets.ps1',
+    'test-runtime-acl.ps1',
     'Runtime asset metadata'
 )) {
     if (-not $workflowYaml.Contains($needle)) {

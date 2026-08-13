@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import uuid
 from datetime import datetime, timezone
@@ -70,7 +71,9 @@ def _high_risk_with_clips(
     job_dir: Path, job_value: dict[str, object], audit: dict[str, object]
 ) -> list[dict[str, object]]:
     active_run = job_value.get("active_run")
-    if not isinstance(active_run, str) or not active_run:
+    if not isinstance(active_run, str) or not re.fullmatch(
+        r"run-[A-Za-z0-9-]+", active_run
+    ):
         raise ValueError("job does not identify the active ASR run")
     clips_dir = (job_dir / "runs" / active_run / "clips").resolve()
     findings = audit.get("findings")
