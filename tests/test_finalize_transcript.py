@@ -142,6 +142,11 @@ class FinalizationTests(unittest.TestCase):
         self.rows = [Segment(0, 1000, "原始一"), Segment(1200, 2200, "原始二")]
         write_jsonl_atomic(self.raw, self.rows)
         self.raw_before = self.raw.read_bytes()
+        self.source_audio = self.job / "source.m4a"
+        self.normalized_wav = self.job / "speech.wav"
+        self.source_audio.parent.mkdir(parents=True, exist_ok=True)
+        self.source_audio.write_bytes(b"source audio evidence")
+        self.normalized_wav.write_bytes(b"normalized wav evidence")
         write_json(
             self.job / "metadata.json",
             {
@@ -164,6 +169,10 @@ class FinalizationTests(unittest.TestCase):
                 "raw_sha256": sha256(self.raw),
                 "segment_count": 2,
                 "active_run": "run-0001",
+                "source_audio_path": str(self.source_audio),
+                "source_audio_sha256": sha256(self.source_audio),
+                "normalized_wav_path": str(self.normalized_wav),
+                "normalized_wav_sha256": sha256(self.normalized_wav),
                 "runtime_provenance": {
                     "yt_dlp": {"version": "2026.07.04", "sha256": "A" * 64},
                     "ffmpeg": {"version": "9.0.1", "sha256": "B" * 64},
@@ -221,6 +230,8 @@ class FinalizationTests(unittest.TestCase):
         self.assertNotIn(".partial-", corrected.name)
         document = corrected.read_text(encoding="utf-8")
         self.assertIn(f'raw_transcript_sha256: "{sha256(self.raw)}"', document)
+        self.assertIn(f'source_audio_sha256: "{sha256(self.source_audio)}"', document)
+        self.assertIn(f'normalized_wav_sha256: "{sha256(self.normalized_wav)}"', document)
         self.assertIn(
             'asr_model_revision: "90c1c61912018b70ada0fcc024ea24aca62f2e63"',
             document,
@@ -253,6 +264,12 @@ class FinalizationTests(unittest.TestCase):
     def test_rejects_changed_raw_hash(self):
         self.raw.write_bytes(self.raw.read_bytes() + b"\n")
         with self.assertRaisesRegex(ValueError, "SHA-256"):
+            finalize_transcript(self.job, self.output, status="complete")
+
+    def test_rejects_changed_normalized_wav_hash(self):
+        self.normalized_wav.write_bytes(b"tampered after transcript preparation")
+
+        with self.assertRaisesRegex(ValueError, "normalized WAV SHA-256"):
             finalize_transcript(self.job, self.output, status="complete")
 
     def test_rejects_changed_timestamp_or_row_count(self):

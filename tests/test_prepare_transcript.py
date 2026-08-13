@@ -1,4 +1,5 @@
 import json
+import hashlib
 import subprocess
 import tempfile
 import unittest
@@ -9,6 +10,7 @@ from unittest.mock import patch
 from scripts.prepare_transcript import (
     _default_runner,
     _job_directory,
+    _load_runtime,
     _run_checked,
     main,
     prepare_transcript,
@@ -24,6 +26,7 @@ class FakeRunner:
         source_duration=59.98,
         cached_source_duration=None,
         cached_wav_duration=59.98,
+        unprobeable_once=None,
     ):
         self.commands = []
         self.empty_second_segment = empty_second_segment
@@ -32,6 +35,7 @@ class FakeRunner:
             source_duration if cached_source_duration is None else cached_source_duration
         )
         self.cached_wav_duration = cached_wav_duration
+        self.unprobeable_once = set(unprobeable_once or ())
         self.converted_speech = False
         self.downloaded_audio = False
 
@@ -79,6 +83,11 @@ class FakeRunner:
 
         if executable == "ffprobe.exe":
             media = Path(command[-1])
+            if media.name in self.unprobeable_once:
+                self.unprobeable_once.remove(media.name)
+                return subprocess.CompletedProcess(
+                    command, 0, stdout="{invalid duration", stderr=""
+                )
             if media.name.startswith("source."):
                 duration = (
                     self.source_duration
@@ -131,28 +140,31 @@ def create_runtime(root: Path) -> Path:
         "runtime_root": str(root),
         "generated_at": "2026-08-14T00:00:00Z",
         "provenance": {
-            "yt_dlp": {"version": "2026.07.04", "sha256": "A" * 64},
-            "ffmpeg": {"version": "9.0.1", "sha256": "B" * 64},
-            "ffprobe": {"version": "9.0.1", "sha256": "C" * 64},
-            "funasr_sensevoice": {"version": "0.1.8", "sha256": "D" * 64},
-            "funasr_vad": {"version": "0.1.8", "sha256": "E" * 64},
+            "yt_dlp": {"version": "2026.07.04", "sha256": ""},
+            "ffmpeg": {"version": "9.0.1", "sha256": ""},
+            "ffprobe": {"version": "9.0.1", "sha256": ""},
+            "funasr_sensevoice": {"version": "0.1.8", "sha256": ""},
+            "funasr_vad": {"version": "0.1.8", "sha256": ""},
             "sensevoice_model": {
                 "version": "q8",
                 "revision": "90c1c61912018b70ada0fcc024ea24aca62f2e63",
-                "sha256": "F" * 64,
+                "sha256": "",
             },
             "vad_model": {
                 "version": "main",
                 "revision": "6840bae4c5c92ee8c04faaf4db23dd0105098d7f",
-                "sha256": "1" * 64,
+                "sha256": "",
             },
         },
     }
     for key, name in tool_names.items():
         path = root / "fake-runtime" / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"fixture")
+        path.write_bytes(f"fixture-{key}".encode("ascii"))
         manifest[key] = str(path)
+        manifest["provenance"][key]["sha256"] = hashlib.sha256(
+            path.read_bytes()
+        ).hexdigest().upper()
     (root / "runtime.json").write_text(
         json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
     )
@@ -205,6 +217,30 @@ class PrepareTranscriptTests(unittest.TestCase):
             process_timeout_seconds=1800,
         )
 
+    def test_load_runtime_rehashes_each_artifact_before_use(self):
+        runtime = json.loads(
+            (self.runtime / "runtime.json").read_text(encoding="utf-8")
+        )
+        Path(runtime["ffmpeg"]).write_bytes(b"tampered executable")
+
+        with self.assertRaisesRegex(ValueError, "ffmpeg.*SHA-256|SHA-256.*ffmpeg"):
+            _load_runtime(self.runtime)
+
+    def test_load_runtime_rejects_artifact_paths_outside_runtime_root(self):
+        outside = self.base / "outside" / "ffmpeg.exe"
+        outside.parent.mkdir(parents=True, exist_ok=True)
+        outside.write_bytes(b"outside executable")
+        runtime_path = self.runtime / "runtime.json"
+        runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+        runtime["ffmpeg"] = str(outside)
+        runtime["provenance"]["ffmpeg"]["sha256"] = hashlib.sha256(
+            outside.read_bytes()
+        ).hexdigest().upper()
+        runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "outside.*runtime|runtime root"):
+            _load_runtime(self.runtime)
+
     def test_default_runner_passes_the_configured_timeout_to_subprocess(self):
         completed = subprocess.CompletedProcess(["tool.exe"], 0, stdout="", stderr="")
         with patch("scripts.prepare_transcript.subprocess.run", return_value=completed) as run:
@@ -246,6 +282,16 @@ class PrepareTranscriptTests(unittest.TestCase):
         )
         self.assertTrue(result.job_dir.resolve().is_relative_to(self.runtime.resolve()))
         self.assertTrue(all(ord(character) < 128 for character in str(result.job_dir)))
+        source = next(result.job_dir.glob("source.*"))
+        wav = result.job_dir / "speech.wav"
+        self.assertEqual(
+            result.job_manifest["source_audio_sha256"],
+            hashlib.sha256(source.read_bytes()).hexdigest().upper(),
+        )
+        self.assertEqual(
+            result.job_manifest["normalized_wav_sha256"],
+            hashlib.sha256(wav.read_bytes()).hexdigest().upper(),
+        )
 
     def test_explicit_page_uses_suffix_and_is_not_defaulted(self):
         result = prepare_transcript(
@@ -338,6 +384,84 @@ class PrepareTranscriptTests(unittest.TestCase):
         self.assertEqual(len(downloads), 1)
         self.assertEqual(len(list((result.job_dir / "archive").glob("source.invalid-*.m4a"))), 1)
 
+    def test_archives_and_redownloads_unprobeable_cached_source(self):
+        job = _job_directory(
+            self.runtime, self.output, BilibiliTarget("BV1rnGt61E4j")
+        )
+        job.mkdir(parents=True, exist_ok=True)
+        (job / "source.m4a").write_bytes(b"unprobeable-source")
+        runner = FakeRunner(unprobeable_once={"source.m4a"})
+
+        result = prepare_transcript(
+            "https://www.bilibili.com/video/BV1rnGt61E4j/",
+            self.output,
+            self.runtime,
+            runner=runner,
+        )
+
+        self.assertTrue(result.raw_path.is_file())
+        self.assertEqual(
+            len(list((result.job_dir / "archive").glob("source.invalid-*.m4a"))),
+            1,
+        )
+
+    def test_archives_and_rebuilds_unprobeable_cached_wav(self):
+        job = _job_directory(
+            self.runtime, self.output, BilibiliTarget("BV1rnGt61E4j")
+        )
+        job.mkdir(parents=True, exist_ok=True)
+        (job / "source.m4a").write_bytes(b"valid-source")
+        (job / "speech.wav").write_bytes(b"unprobeable-wav")
+        runner = FakeRunner(unprobeable_once={"speech.wav"})
+
+        result = prepare_transcript(
+            "https://www.bilibili.com/video/BV1rnGt61E4j/",
+            self.output,
+            self.runtime,
+            runner=runner,
+        )
+
+        self.assertTrue(result.raw_path.is_file())
+        self.assertEqual(
+            len(list((result.job_dir / "archive").glob("speech.invalid-*.wav"))),
+            1,
+        )
+
+    def test_corrupt_metadata_is_quarantined_and_refetched(self):
+        job = _job_directory(
+            self.runtime, self.output, BilibiliTarget("BV1rnGt61E4j")
+        )
+        job.mkdir(parents=True, exist_ok=True)
+        (job / "metadata.json").write_text("{truncated", encoding="utf-8")
+
+        result = prepare_transcript(
+            "https://www.bilibili.com/video/BV1rnGt61E4j/",
+            self.output,
+            self.runtime,
+            runner=FakeRunner(),
+        )
+
+        self.assertTrue(result.raw_path.is_file())
+        self.assertEqual(
+            len(list((result.job_dir / "archive").glob("metadata.invalid-*.json"))),
+            1,
+        )
+
+    def test_output_root_is_probed_before_any_external_command(self):
+        self.output.parent.mkdir(parents=True, exist_ok=True)
+        self.output.write_text("not a directory", encoding="utf-8")
+        runner = FakeRunner()
+
+        with self.assertRaisesRegex((OSError, ValueError), "output root|directory"):
+            prepare_transcript(
+                "https://www.bilibili.com/video/BV1rnGt61E4j/",
+                self.output,
+                self.runtime,
+                runner=runner,
+            )
+
+        self.assertEqual(runner.commands, [])
+
     def test_successful_raw_is_reused_without_running_tools(self):
         first = prepare_transcript(
             "https://www.bilibili.com/video/BV1rnGt61E4j/",
@@ -358,6 +482,25 @@ class PrepareTranscriptTests(unittest.TestCase):
         )
         self.assertTrue(second.reused)
         self.assertEqual(second.raw_path.read_bytes(), before)
+
+    def test_reuse_rejects_changed_normalized_wav_hash(self):
+        first = prepare_transcript(
+            "https://www.bilibili.com/video/BV1rnGt61E4j/",
+            self.output,
+            self.runtime,
+            runner=FakeRunner(),
+        )
+        (first.job_dir / "speech.wav").write_bytes(b"tampered after ASR")
+
+        with self.assertRaisesRegex(ValueError, "normalized WAV.*SHA-256"):
+            prepare_transcript(
+                "https://www.bilibili.com/video/BV1rnGt61E4j/",
+                self.output,
+                self.runtime,
+                runner=lambda _args: (_ for _ in ()).throw(
+                    AssertionError("tools must not run before reuse integrity validation")
+                ),
+            )
 
     def test_reuse_rejects_valid_jsonl_whose_sha256_changed(self):
         first = prepare_transcript(
@@ -554,8 +697,12 @@ class PrepareTranscriptTests(unittest.TestCase):
         interrupted = json.loads((job / "job.json").read_text(encoding="utf-8"))
         runtime_path = self.runtime / "runtime.json"
         runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
-        runtime["provenance"]["funasr_sensevoice"]["sha256"] = "2" * 64
-        runtime["provenance"]["funasr_vad"]["sha256"] = "3" * 64
+        for key in ("funasr_sensevoice", "funasr_vad"):
+            artifact = Path(runtime[key])
+            artifact.write_bytes(artifact.read_bytes() + b"-updated")
+            runtime["provenance"][key]["sha256"] = hashlib.sha256(
+                artifact.read_bytes()
+            ).hexdigest().upper()
         runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
 
         resumed_runner = FakeRunner()
@@ -573,6 +720,69 @@ class PrepareTranscriptTests(unittest.TestCase):
         vad = json.loads((job / "vad.json").read_text(encoding="utf-8"))
         self.assertEqual(vad["schema_version"], 2)
         self.assertRegex(vad["runtime_fingerprint"], r"^[A-F0-9]{64}$")
+
+    def test_same_duration_replacement_wav_recomputes_all_clips_and_asr(self):
+        with self.assertRaisesRegex(ValueError, "empty ASR text"):
+            prepare_transcript(
+                "https://www.bilibili.com/video/BV1rnGt61E4j/",
+                self.output,
+                self.runtime,
+                runner=FakeRunner(empty_second_segment=True),
+            )
+        job = _job_directory(
+            self.runtime, self.output, BilibiliTarget("BV1rnGt61E4j")
+        )
+        (job / "speech.wav").write_bytes(b"different-wav-with-the-same-duration")
+
+        runner = FakeRunner()
+        result = prepare_transcript(
+            "https://www.bilibili.com/video/BV1rnGt61E4j/",
+            self.output,
+            self.runtime,
+            runner=runner,
+        )
+
+        sense_commands = [
+            command
+            for command in runner.commands
+            if Path(command[0]).name.lower() == "llama-funasr-sensevoice.exe"
+        ]
+        clip_commands = [
+            command
+            for command in runner.commands
+            if Path(command[0]).name.lower() == "ffmpeg.exe"
+            and Path(command[-1]).parent.name == "clips"
+        ]
+        self.assertEqual(len(sense_commands), 2)
+        self.assertEqual(len(clip_commands), 2)
+        self.assertTrue(result.raw_path.is_file())
+
+    def test_corrupt_vad_cache_is_quarantined_and_recomputed(self):
+        with self.assertRaisesRegex(ValueError, "empty ASR text"):
+            prepare_transcript(
+                "https://www.bilibili.com/video/BV1rnGt61E4j/",
+                self.output,
+                self.runtime,
+                runner=FakeRunner(empty_second_segment=True),
+            )
+        job = _job_directory(
+            self.runtime, self.output, BilibiliTarget("BV1rnGt61E4j")
+        )
+        (job / "vad.json").write_text("{truncated", encoding="utf-8")
+
+        runner = FakeRunner()
+        result = prepare_transcript(
+            "https://www.bilibili.com/video/BV1rnGt61E4j/",
+            self.output,
+            self.runtime,
+            runner=runner,
+        )
+
+        self.assertTrue(result.raw_path.is_file())
+        self.assertEqual(
+            len(list((job / "archive").glob("vad.invalid-*.json"))),
+            1,
+        )
 
     def test_corrupt_segment_checkpoint_is_quarantined_and_recomputed(self):
         runner = FakeRunner(empty_second_segment=True)

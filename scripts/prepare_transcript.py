@@ -157,12 +157,6 @@ def _load_runtime(runtime_root: Path) -> tuple[dict[str, str], dict[str, object]
         raise ValueError(
             "runtime manifest has an unsupported schema; rerun bootstrap_runtime.ps1"
         )
-    resolved: dict[str, str] = {}
-    for key in _RUNTIME_KEYS:
-        value = manifest.get(key)
-        if not isinstance(value, str) or not Path(value).is_file():
-            raise ValueError(f"runtime manifest has an invalid {key} path")
-        resolved[key] = value
     provenance = manifest.get("provenance")
     required_provenance = {
         "yt_dlp",
@@ -185,6 +179,23 @@ def _load_runtime(runtime_root: Path) -> tuple[dict[str, str], dict[str, object]
             r"[0-9a-f]{40}", str(value.get("revision", ""))
         ):
             raise ValueError(f"runtime provenance revision is invalid for {key}")
+    resolved: dict[str, str] = {}
+    for key in _RUNTIME_KEYS:
+        value = manifest.get(key)
+        if not isinstance(value, str):
+            raise ValueError(f"runtime manifest has an invalid {key} path")
+        path = Path(value).resolve()
+        if not path.is_relative_to(runtime_root):
+            raise ValueError(f"runtime artifact {key} is outside the runtime root")
+        if not path.is_file():
+            raise ValueError(f"runtime manifest has an invalid {key} path")
+        expected = str(provenance[key]["sha256"]).upper()
+        actual = _sha256(path)
+        if actual != expected:
+            raise ValueError(
+                f"runtime artifact {key} SHA-256 changed; rerun bootstrap_runtime.ps1"
+            )
+        resolved[key] = str(path)
     return resolved, provenance
 
 
@@ -201,11 +212,17 @@ def _load_or_fetch_metadata(
 ) -> dict[str, object]:
     path = job_dir / "metadata.json"
     if path.is_file():
-        value = _read_json(path)
-        if isinstance(value, dict) and (
-            value.get("bvid"), value.get("page")
-        ) == (target.bvid, target.page):
+        try:
+            value = _read_json(path)
+            if not isinstance(value, dict) or (
+                value.get("bvid"), value.get("page")
+            ) != (target.bvid, target.page):
+                raise ValueError("cached metadata does not match this Bilibili page")
+            if not isinstance(value.get("duration_ms"), int) or value["duration_ms"] <= 0:
+                raise ValueError("cached metadata duration is invalid")
             return value
+        except (OSError, TypeError, ValueError):
+            _archive_invalid_media(path, job_dir)
 
     result = _run_checked(
         runner,
@@ -302,11 +319,15 @@ def _prepare_wav(
     runtime: dict[str, str],
     runner: Runner,
     expected_duration_ms: int,
-) -> tuple[Path, int]:
+) -> tuple[Path, Path, int]:
     audio = _find_cached_audio(job_dir)
     if audio is not None:
-        cached_duration_ms = _probe_duration_ms(audio, runtime, runner)
-        if not _duration_matches(cached_duration_ms, expected_duration_ms):
+        try:
+            cached_duration_ms = _probe_duration_ms(audio, runtime, runner)
+            valid_audio = _duration_matches(cached_duration_ms, expected_duration_ms)
+        except (OSError, RuntimeError, ValueError):
+            valid_audio = False
+        if not valid_audio:
             _archive_invalid_media(audio, job_dir)
             audio = None
     if audio is None:
@@ -347,9 +368,13 @@ def _prepare_wav(
 
     wav = job_dir / "speech.wav"
     if wav.is_file():
-        wav_duration_ms = _probe_duration_ms(wav, runtime, runner)
-        if _duration_matches(wav_duration_ms, expected_duration_ms):
-            return wav, wav_duration_ms
+        try:
+            wav_duration_ms = _probe_duration_ms(wav, runtime, runner)
+            valid_wav = _duration_matches(wav_duration_ms, expected_duration_ms)
+        except (OSError, RuntimeError, ValueError):
+            valid_wav = False
+        if valid_wav:
+            return audio, wav, wav_duration_ms
         _archive_invalid_media(wav, job_dir)
     partial = job_dir / "speech.partial.wav"
     _run_checked(
@@ -380,7 +405,7 @@ def _prepare_wav(
             f"converted WAV duration {wav_duration_ms}ms does not match video metadata {expected_duration_ms}ms"
         )
     os.replace(partial, wav)
-    return wav, wav_duration_ms
+    return audio, wav, wav_duration_ms
 
 
 def _validate_vad_spans(
@@ -413,22 +438,25 @@ def _load_or_run_vad(
         runtime_provenance, ("funasr_vad", "vad_model")
     )
     if path.is_file():
-        value = _read_json(path)
-        if (
-            isinstance(value, dict)
-            and value.get("schema_version") == 2
-            and value.get("wav_sha256") == wav_sha256
-            and value.get("wav_duration_ms") == wav_duration_ms
-            and value.get("runtime_fingerprint") == runtime_fingerprint
-            and isinstance(value.get("spans"), list)
-        ):
+        try:
+            value = _read_json(path)
+            if not (
+                isinstance(value, dict)
+                and value.get("schema_version") == 2
+                and value.get("wav_sha256") == wav_sha256
+                and value.get("wav_duration_ms") == wav_duration_ms
+                and value.get("runtime_fingerprint") == runtime_fingerprint
+                and isinstance(value.get("spans"), list)
+            ):
+                raise ValueError("cached VAD state does not match current evidence")
             spans = [
                 (int(row["start_ms"]), int(row["end_ms"]))
                 for row in value["spans"]
             ]
             _validate_vad_spans(spans, wav_duration_ms)
             return spans
-        _archive_invalid_media(path, job_dir)
+        except (OSError, TypeError, ValueError, KeyError):
+            _archive_invalid_media(path, job_dir)
 
     result = _run_checked(
         runner,
@@ -461,9 +489,11 @@ def _load_or_run_vad(
 
 def _load_segment_checkpoint(
     path: Path,
+    clip: Path,
     expected_start: int,
     expected_end: int,
     runtime_fingerprint: str,
+    media_fingerprint: str,
 ) -> Segment | None:
     if not path.is_file():
         return None
@@ -472,16 +502,21 @@ def _load_segment_checkpoint(
         if not isinstance(value, dict) or set(value) != {
             "schema_version",
             "runtime_fingerprint",
+            "media_fingerprint",
+            "clip_sha256",
             "start_ms",
             "end_ms",
             "text",
         }:
             raise ValueError(f"invalid segment checkpoint: {path}")
         if (
-            value.get("schema_version") != 2
+            value.get("schema_version") != 3
             or value.get("runtime_fingerprint") != runtime_fingerprint
+            or value.get("media_fingerprint") != media_fingerprint
         ):
-            raise ValueError(f"segment checkpoint runtime changed: {path}")
+            raise ValueError(f"segment checkpoint evidence changed: {path}")
+        if not clip.is_file() or _sha256(clip) != value.get("clip_sha256"):
+            raise ValueError(f"segment checkpoint clip changed: {path}")
         segment = Segment(int(value["start_ms"]), int(value["end_ms"]), value["text"])
         if (segment.start_ms, segment.end_ms) != (expected_start, expected_end):
             raise ValueError(f"segment checkpoint boundaries changed: {path}")
@@ -497,12 +532,71 @@ def _load_segment_checkpoint(
         return None
 
 
+def _media_fingerprint(
+    wav_sha256: str,
+    spans: Sequence[tuple[int, int]],
+    runtime_provenance: dict[str, object],
+) -> str:
+    payload = {
+        "wav_sha256": wav_sha256,
+        "vad_runtime_fingerprint": _provenance_fingerprint(
+            runtime_provenance, ("funasr_vad", "vad_model")
+        ),
+        "spans": [list(span) for span in spans],
+    }
+    encoded = json.dumps(
+        payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    ).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest().upper()
+
+
+def _archive_run_artifact(path: Path) -> None:
+    if not path.is_file():
+        return
+    quarantine = path.parent / "quarantine"
+    quarantine.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    target = quarantine / f"{path.stem}.invalid-{stamp}-{uuid.uuid4().hex[:8]}{path.suffix}"
+    shutil.move(str(path), str(target))
+
+
+def _clip_is_current(
+    clip: Path,
+    metadata_path: Path,
+    start_ms: int,
+    end_ms: int,
+    media_fingerprint: str,
+) -> bool:
+    if not clip.is_file() or not metadata_path.is_file():
+        return False
+    try:
+        value = _read_json(metadata_path)
+        return bool(
+            isinstance(value, dict)
+            and set(value) == {
+                "schema_version",
+                "media_fingerprint",
+                "start_ms",
+                "end_ms",
+                "clip_sha256",
+            }
+            and value.get("schema_version") == 1
+            and value.get("media_fingerprint") == media_fingerprint
+            and value.get("start_ms") == start_ms
+            and value.get("end_ms") == end_ms
+            and value.get("clip_sha256") == _sha256(clip)
+        )
+    except (OSError, TypeError, ValueError):
+        return False
+
+
 def _transcribe_segments(
     wav: Path,
     spans: list[tuple[int, int]],
     run_dir: Path,
     runtime: dict[str, str],
     runtime_provenance: dict[str, object],
+    media_fingerprint: str,
     runner: Runner,
 ) -> list[Segment]:
     clips = run_dir / "clips"
@@ -516,15 +610,25 @@ def _transcribe_segments(
 
     for index, (start_ms, end_ms) in enumerate(spans):
         checkpoint = checkpoints / f"{index:06d}.json"
+        clip = clips / f"{index:06d}.wav"
+        clip_metadata = clips / f"{index:06d}.json"
         existing = _load_segment_checkpoint(
-            checkpoint, start_ms, end_ms, runtime_fingerprint
+            checkpoint,
+            clip,
+            start_ms,
+            end_ms,
+            runtime_fingerprint,
+            media_fingerprint,
         )
         if existing is not None:
             rows.append(existing)
             continue
 
-        clip = clips / f"{index:06d}.wav"
-        if not clip.is_file():
+        if not _clip_is_current(
+            clip, clip_metadata, start_ms, end_ms, media_fingerprint
+        ):
+            _archive_run_artifact(clip)
+            _archive_run_artifact(clip_metadata)
             partial = clips / f"{index:06d}.partial.wav"
             _run_checked(
                 runner,
@@ -547,6 +651,16 @@ def _transcribe_segments(
             if not partial.is_file():
                 raise RuntimeError(f"FFmpeg did not create audio segment {index}")
             os.replace(partial, clip)
+            _write_json_atomic(
+                clip_metadata,
+                {
+                    "schema_version": 1,
+                    "media_fingerprint": media_fingerprint,
+                    "start_ms": start_ms,
+                    "end_ms": end_ms,
+                    "clip_sha256": _sha256(clip),
+                },
+            )
 
         result = _run_checked(
             runner,
@@ -566,8 +680,10 @@ def _transcribe_segments(
         _write_json_atomic(
             checkpoint,
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "runtime_fingerprint": runtime_fingerprint,
+                "media_fingerprint": media_fingerprint,
+                "clip_sha256": _sha256(clip),
                 "start_ms": segment.start_ms,
                 "end_ms": segment.end_ms,
                 "text": segment.text,
@@ -609,6 +725,48 @@ def _job_directory(runtime_root: Path, output_root: Path, target: BilibiliTarget
     return runtime_root / "jobs" / (
         f"{output_name(target.bvid, target.page)}-out-{output_digest}"
     )
+
+
+def _prepare_output_root(output_root: Path) -> Path:
+    resolved = output_root.resolve()
+    try:
+        resolved.mkdir(parents=True, exist_ok=True)
+        if not resolved.is_dir():
+            raise ValueError("output root is not a directory")
+        probe = resolved / f".btr-write-probe-{uuid.uuid4().hex}"
+        try:
+            with probe.open("x", encoding="ascii") as handle:
+                handle.write("ok")
+                handle.flush()
+                os.fsync(handle.fileno())
+        finally:
+            if probe.exists():
+                probe.unlink()
+    except (OSError, ValueError) as exc:
+        raise ValueError(
+            f"output root is not a writable directory: {resolved}"
+        ) from exc
+    return resolved
+
+
+def _validate_manifest_media(job_dir: Path, manifest: dict[str, object]) -> None:
+    for label, path_key, hash_key in (
+        ("source audio", "source_audio_path", "source_audio_sha256"),
+        ("normalized WAV", "normalized_wav_path", "normalized_wav_sha256"),
+    ):
+        path = Path(str(manifest.get(path_key, ""))).resolve()
+        expected = manifest.get(hash_key)
+        if (
+            not isinstance(expected, str)
+            or not re.fullmatch(r"[0-9A-Fa-f]{64}", expected)
+            or not path.is_relative_to(job_dir)
+            or not path.is_file()
+            or _sha256(path) != expected.upper()
+        ):
+            raise ValueError(
+                f"existing {label} SHA-256 does not match its job manifest; "
+                "request an explicit ASR rerun"
+            )
 
 
 def _prepare_transcript_locked(
@@ -661,6 +819,7 @@ def _prepare_transcript_locked(
             raise ValueError(
                 "existing raw transcript predates runtime provenance; request an explicit ASR rerun"
             )
+        _validate_manifest_media(job_dir, manifest)
         manifest_raw_path = Path(str(manifest.get("raw_path", ""))).resolve()
         if manifest_raw_path != raw_path.resolve():
             raise ValueError(
@@ -722,15 +881,26 @@ def _prepare_transcript_locked(
     }
     _write_json_atomic(manifest_path, manifest)
     expected_duration_ms = int(metadata["duration_ms"])
-    wav, wav_duration_ms = _prepare_wav(
+    audio, wav, wav_duration_ms = _prepare_wav(
         target, job_dir, runtime, runner, expected_duration_ms
     )
     spans = _load_or_run_vad(
         wav, wav_duration_ms, job_dir, runtime, runtime_provenance, runner
     )
+    source_audio_sha256 = _sha256(audio)
+    normalized_wav_sha256 = _sha256(wav)
+    media_fingerprint = _media_fingerprint(
+        normalized_wav_sha256, spans, runtime_provenance
+    )
     run_dir = job_dir / "runs" / active_run
     rows = _transcribe_segments(
-        wav, spans, run_dir, runtime, runtime_provenance, runner
+        wav,
+        spans,
+        run_dir,
+        runtime,
+        runtime_provenance,
+        media_fingerprint,
+        runner,
     )
     validate_coverage(spans, rows)
 
@@ -746,6 +916,11 @@ def _prepare_transcript_locked(
             "segment_count": len(rows),
             "media_validated": True,
             "media_duration_ms": wav_duration_ms,
+            "source_audio_path": str(audio),
+            "source_audio_sha256": source_audio_sha256,
+            "normalized_wav_path": str(wav),
+            "normalized_wav_sha256": normalized_wav_sha256,
+            "media_fingerprint": media_fingerprint,
         }
     )
     _write_json_atomic(manifest_path, manifest)
@@ -772,8 +947,9 @@ def prepare_transcript(
     if process_timeout_seconds <= 0:
         raise ValueError("process timeout must be a positive number of seconds")
     target = parse_bilibili_url(url)
+    output_path = _prepare_output_root(Path(output_root))
     runtime_path = Path(runtime_root).resolve()
-    job_dir = _job_directory(runtime_path, Path(output_root), target)
+    job_dir = _job_directory(runtime_path, output_path, target)
     _ensure_ascii(job_dir)
     selected_runner = runner or (
         lambda command: _default_runner(
@@ -783,7 +959,7 @@ def prepare_transcript(
     with exclusive_job_lock(job_dir / "job.lock"):
         return _prepare_transcript_locked(
             url,
-            output_root,
+            output_path,
             runtime_root,
             runner=selected_runner,
             rerun_asr=rerun_asr,

@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import uuid
 from datetime import datetime, timezone
@@ -109,6 +110,8 @@ def render_corrected(
     raw_sha256: str | None = None,
     high_risk_count: int = 0,
     high_risk_reviewed_count: int = 0,
+    source_audio_sha256: str | None = None,
+    normalized_wav_sha256: str | None = None,
 ) -> str:
     if status not in {"complete", "incomplete"}:
         raise ValueError("status must be complete or incomplete")
@@ -154,12 +157,16 @@ def render_corrected(
         funasr = provenance["funasr_sensevoice"]
         funasr_vad = provenance["funasr_vad"]
         vad_model = provenance["vad_model"]
-        if not generated_at or not raw_sha256:
-            raise ValueError("formal provenance requires generation time and raw SHA-256")
+        if not all(
+            (generated_at, raw_sha256, source_audio_sha256, normalized_wav_sha256)
+        ):
+            raise ValueError("formal provenance requires generation time and evidence SHA-256 values")
         lines.extend(
             [
                 f"generated_at: {_yaml_string(generated_at)}",
                 f"raw_transcript_sha256: {_yaml_string(raw_sha256)}",
+                f"source_audio_sha256: {_yaml_string(source_audio_sha256)}",
+                f"normalized_wav_sha256: {_yaml_string(normalized_wav_sha256)}",
                 'asr_model: "SenseVoiceSmall"',
                 f"asr_model_revision: {_yaml_string(sensevoice_model['revision'])}",
                 f"asr_model_sha256: {_yaml_string(sensevoice_model['sha256'])}",
@@ -291,6 +298,22 @@ def _finalize_transcript_locked(
         raise ValueError(
             "job predates runtime provenance; rerun transcript preparation with --rerun-asr"
         )
+    source_audio_sha256 = job_value.get("source_audio_sha256")
+    normalized_wav_sha256 = job_value.get("normalized_wav_sha256")
+    source_audio_path = Path(str(job_value.get("source_audio_path", ""))).resolve()
+    normalized_wav_path = Path(str(job_value.get("normalized_wav_path", ""))).resolve()
+    for label, path, expected in (
+        ("source audio", source_audio_path, source_audio_sha256),
+        ("normalized WAV", normalized_wav_path, normalized_wav_sha256),
+    ):
+        if (
+            not isinstance(expected, str)
+            or not re.fullmatch(r"[0-9A-Fa-f]{64}", expected)
+            or not path.is_relative_to(job_dir)
+            or not path.is_file()
+            or _sha256(path) != expected.upper()
+        ):
+            raise ValueError(f"{label} SHA-256 does not match the prepared job")
     generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     document = render_corrected(
         metadata_value,
@@ -303,6 +326,8 @@ def _finalize_transcript_locked(
         raw_sha256=actual_hash,
         high_risk_count=high_risk_count,
         high_risk_reviewed_count=reviewed_count,
+        source_audio_sha256=source_audio_sha256.upper(),
+        normalized_wav_sha256=normalized_wav_sha256.upper(),
     )
 
     _archive_owned_stale_partials(formal_dir, job_dir)
