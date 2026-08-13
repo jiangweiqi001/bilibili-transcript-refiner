@@ -3,6 +3,9 @@ name: test
 on:
   push:
   pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
 
 jobs:
   windows-contracts:
@@ -19,6 +22,9 @@ jobs:
       - name: Runtime layout parity
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/test-runtime-layout.ps1
+      - name: Runtime asset metadata
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/verify-runtime-assets.ps1
       - name: Skill static contract
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/static-contract.ps1

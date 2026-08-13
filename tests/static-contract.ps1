@@ -182,4 +182,22 @@ foreach ($needle in $workflowRequired) {
     }
 }
 
+$workflowPath = Join-Path $repo '.github/workflows/test.yml'
+$workflowYaml = Get-Content -LiteralPath $workflowPath -Raw -Encoding utf8
+foreach ($needle in @(
+    'workflow_dispatch',
+    'schedule',
+    'cron',
+    'verify-runtime-assets.ps1',
+    'Runtime asset metadata'
+)) {
+    if (-not $workflowYaml.Contains($needle)) {
+        throw "missing Actions asset contract: $needle"
+    }
+}
+$assetVerifierPath = Join-Path $repo 'tests/verify-runtime-assets.ps1'
+if (-not (Test-Path -LiteralPath $assetVerifierPath -PathType Leaf)) {
+    throw 'tests/verify-runtime-assets.ps1 is required'
+}
+
 Write-Output 'static Skill contract: PASS'
