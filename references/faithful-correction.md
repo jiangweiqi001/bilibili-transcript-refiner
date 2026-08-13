@@ -36,7 +36,8 @@ Treat the recording as the authority and the raw ASR as immutable evidence. Corr
 - Keep the marker exactly where the uncertain speech occurs.
 - Add one concise note for each marker, including alternatives only when genuinely plausible.
 - A local `[疑似：X]` or `[听不清]` marker inside otherwise meaningful text may remain in a `complete` transcript after every other gate passes.
-- A whole-row substitution consisting of a single `[听不清]`, with only ordinary Unicode whitespace or punctuation around it, is an abstention: it forces `incomplete` and does not need—and must not invent—an audio review for that informational finding. Letters, numbers, Han characters, emoji, mathematical or currency symbols, control or zero-width characters, `[疑似：…]`, or any other semantic content make the row ineligible for this exception.
+- A whole-row substitution consisting of a single `[听不清]`, with only ordinary Unicode whitespace or punctuation around it, is an abstention: it forces `incomplete` and does not need—and must not invent—an audio review for that informational finding.
+- Letters, numbers, Han characters, emoji, mathematical or currency symbols, control or zero-width characters, `[疑似：…]`, or any other semantic content make the row ineligible for this exception.
 - If audio inspection is unavailable, never claim acoustic verification or create a review record; keep the raw reading, use a local uncertainty marker, or use the strict whole-row abstention when no speech in that row can be recovered reliably.
 
 ## Calibration example

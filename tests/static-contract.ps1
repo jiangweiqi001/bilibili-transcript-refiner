@@ -86,18 +86,35 @@ $progressBarWord = [string][char]0x8FDB + [char]0x5EA6 + [char]0x6761
 $noSummaryWord = [string][char]0x4E0D + [char]0x505A + [char]0x7701 + [char]0x6D41 + [char]0x7248
 $onePageClaim = [string][char]0x6BCF + [char]0x6B21 + [char]0x8C03 + [char]0x7528 + [char]0x53EA + [char]0x5904 + [char]0x7406 + [char]0x4E00 + [char]0x4E2A + [char]0x89C6 + [char]0x9891 + [char]0x9875 + [char]0x9762
 $pythonTestClaimSuffix = [string][char]0x9879 + ' Python ' + [char]0x81EA + [char]0x52A8 + [char]0x5316 + [char]0x6D4B + [char]0x8BD5
-$currentPythonTestClaim = '84 ' + $pythonTestClaimSuffix
-$oldPythonTestClaim = '74 ' + $pythonTestClaimSuffix
 $readmeFirstLine = @($readme -split "`r?`n", 2)[0]
 if ($readmeFirstLine -cne $requiredFirstLine) {
     throw 'README first line must be exact'
 }
+
+$discoverTests = "import pathlib, sys, unittest; root = pathlib.Path(sys.argv[1]).resolve(); sys.path.insert(0, str(root)); print(unittest.defaultTestLoader.discover(start_dir=str(root / 'tests'), pattern='test_*.py', top_level_dir=str(root)).countTestCases())"
+$discoveredTestCountOutput = @(& python -X utf8 -c $discoverTests $repo)
+if ($LASTEXITCODE -ne 0 -or
+    $discoveredTestCountOutput.Count -ne 1 -or
+    [string]$discoveredTestCountOutput[0] -notmatch '^\d+$') {
+    throw 'could not discover the Python unittest count'
+}
+$discoveredPythonTestCount = [int]$discoveredTestCountOutput[0]
+$pythonTestClaimMatches = [regex]::Matches(
+    $readme,
+    '(?m)(?<count>\d+) ' + [regex]::Escape($pythonTestClaimSuffix)
+)
+if ($pythonTestClaimMatches.Count -ne 1) {
+    throw 'README must contain exactly one Python unittest count claim'
+}
+if ([int]$pythonTestClaimMatches[0].Groups['count'].Value -ne $discoveredPythonTestCount) {
+    throw "README Python unittest count must equal discovery: $discoveredPythonTestCount"
+}
+
 $promotionalRequired = @(
     'actions/workflows/test.yml/badge.svg',
     'yt-dlp -> FFmpeg -> FSMN-VAD -> SenseVoiceSmall',
     'b23.tv',
     'bili2233.cn',
-    $currentPythonTestClaim
     '46',
     '2026-08-14',
     'Star',
@@ -272,6 +289,63 @@ $correctionGuide = Get-Content -LiteralPath (Join-Path $repo 'references/faithfu
 $outputGuide = Get-Content -LiteralPath (Join-Path $repo 'references/output-contract.md') -Raw -Encoding utf8
 $workflow = $skill + "`n" + $correctionGuide + "`n" + $outputGuide
 
+function Normalize-ContractText {
+    param([Parameter(Mandatory = $true)][string]$Text)
+
+    return [regex]::Replace($Text, '\s+', ' ').Trim()
+}
+
+function Get-MarkdownContractSegments {
+    param([Parameter(Mandatory = $true)][string]$Text)
+
+    $inFence = $false
+    foreach ($line in [regex]::Split($Text, '\r?\n')) {
+        $candidate = $line.Trim()
+        if ($candidate -match '^(?:```|~~~)') {
+            $inFence = -not $inFence
+            continue
+        }
+        if ($inFence -or [string]::IsNullOrWhiteSpace($candidate) -or $candidate -match '^#{1,6}\s') {
+            continue
+        }
+        if ($candidate -match '^(?:\d+\.|[-*+])\s+(?<body>.+)$') {
+            $candidate = $Matches['body']
+        } elseif ($candidate -match '^>\s?(?<body>.+)$') {
+            $candidate = $Matches['body']
+        }
+        $normalized = Normalize-ContractText -Text $candidate
+        if (-not [string]::IsNullOrWhiteSpace($normalized)) {
+            Write-Output $normalized
+        }
+    }
+}
+
+function Get-ContractSentenceCount {
+    param(
+        [Parameter(Mandatory = $true)][string]$Text,
+        [Parameter(Mandatory = $true)][string]$Sentence
+    )
+
+    $normalizedSentence = Normalize-ContractText -Text $Sentence
+    return @(
+        Get-MarkdownContractSegments -Text $Text |
+            Where-Object { $_ -ceq $normalizedSentence }
+    ).Count
+}
+
+function Assert-UniqueContractSentence {
+    param(
+        [Parameter(Mandatory = $true)][string]$Text,
+        [Parameter(Mandatory = $true)][string]$Sentence,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $count = Get-ContractSentenceCount -Text $Text -Sentence $Sentence
+    if ($count -ne 1) {
+        throw "contract sentence must appear exactly once for ${Label}; found: $count"
+    }
+}
+
 function Get-ContractSection {
     param(
         [Parameter(Mandatory = $true)][string]$Text,
@@ -279,24 +353,12 @@ function Get-ContractSection {
         [Parameter(Mandatory = $true)][string]$Label
     )
 
-    $pattern = '(?ms)^' + [regex]::Escape($Heading) + '\r?\n(.*?)(?=^## |\z)'
-    $match = [regex]::Match($Text, $pattern)
-    if (-not $match.Success) {
-        throw "missing contract section: $Label"
+    $pattern = '(?ms)^' + [regex]::Escape($Heading) + '\r?\n(?<body>.*?)(?=^## [^\r\n]+\r?$|\z)'
+    $matches = [regex]::Matches($Text, $pattern)
+    if ($matches.Count -ne 1) {
+        throw "contract section must appear exactly once for ${Label}; found: $($matches.Count)"
     }
-    return [regex]::Replace($match.Groups[1].Value, '\s+', ' ').Trim()
-}
-
-function Assert-ContractPattern {
-    param(
-        [Parameter(Mandatory = $true)][string]$Text,
-        [Parameter(Mandatory = $true)][string]$Pattern,
-        [Parameter(Mandatory = $true)][string]$Message
-    )
-
-    if ($Text -notmatch $Pattern) {
-        throw $Message
-    }
+    return $matches[0].Groups['body'].Value
 }
 
 function Get-WorkflowStep {
@@ -305,13 +367,12 @@ function Get-WorkflowStep {
         [Parameter(Mandatory = $true)][int]$Number
     )
 
-    $nextNumber = $Number + 1
-    $pattern = '(?:^| )' + $Number + '\. (.*?)(?= ' + $nextNumber + '\. )'
-    $match = [regex]::Match($Workflow, $pattern)
-    if (-not $match.Success) {
-        throw "missing Skill workflow step: $Number"
+    $pattern = '(?ms)^' + $Number + '\. (?<body>.*?)(?=^\d+\. |\z)'
+    $matches = [regex]::Matches($Workflow, $pattern)
+    if ($matches.Count -ne 1) {
+        throw "Skill workflow step must appear exactly once for ${Number}; found: $($matches.Count)"
     }
-    return $match.Groups[1].Value
+    return $matches[0].Groups['body'].Value
 }
 
 $skillWorkflow = Get-ContractSection -Text $skill -Heading '## Workflow' -Label 'Skill workflow'
@@ -325,32 +386,63 @@ $skillStep7 = Get-WorkflowStep -Workflow $skillWorkflow -Number 7
 $skillStep8 = Get-WorkflowStep -Workflow $skillWorkflow -Number 8
 $skillStep9 = Get-WorkflowStep -Workflow $skillWorkflow -Number 9
 
-Assert-ContractPattern -Text $skillStep7 -Pattern 'returned JSON.*`"complete": true`.*replacement' -Message 'Skill step 7 must continue checkpointing through complete: true and all replacements'
-Assert-ContractPattern -Text $skillStep7 -Pattern 'every block.*refresh.*correction-audit\.json.*revise.*not record.*review' -Message 'Skill step 7 must limit batching to audit refresh/read/revision without review records'
-Assert-ContractPattern -Text $skillStep8 -Pattern 'Only after.*complete.*stable.*review_corrections\.py.*list.*record' -Message 'Skill step 8 must defer listing and recording reviews until a complete stable checkpoint'
-Assert-ContractPattern -Text $skillStep8 -Pattern 'later.*append or replacement.*SHA-256.*entire.*corrections.*invalidates all.*review.*final review' -Message 'Skill step 8 must require a new final review after every later correction change'
-Assert-ContractPattern -Text $skillStep9 -Pattern 'complete.*incomplete.*every raw row.*timestamp-matched correction.*incomplete.*not a prefix' -Message 'Skill step 9 must require full timestamp-matched row coverage for both statuses'
-Assert-ContractPattern -Text $skillStep9 -Pattern ('local.*uncertainty.*complete.*whole-row.*' + [regex]::Escape($inaudibleMarker) + '.*incomplete') -Message 'Skill step 9 must distinguish local uncertainty from a whole-row inaudible substitution'
-Assert-ContractPattern -Text $skillStep9 -Pattern ('whole-row.*' + [regex]::Escape($inaudibleMarker) + '.*without.*audio review.*other.*high-risk.*current.*review') -Message 'Skill step 9 must exempt only the whole-row inaudible substitution from fabricated review evidence'
+$suspectEllipsisMarker = $suspectMarker + [char]0x2026 + ']'
+$suspectXMarker = $suspectMarker + 'X]'
+$emDash = [char]0x2014
 
-Assert-ContractPattern -Text $reviewTimingContract -Pattern 'During batching.*refresh.*correction-audit\.json.*revise.*do not.*record.*review' -Message 'output contract must define audit-only batching behavior'
-Assert-ContractPattern -Text $reviewTimingContract -Pattern 'Only after.*complete.*stable.*list.*record' -Message 'output contract must define one final review pass after stable completion'
-Assert-ContractPattern -Text $reviewTimingContract -Pattern 'append or replacement.*SHA-256.*entire corrections.*invalidates all.*review.*repeat.*final review' -Message 'output contract must invalidate every review after any correction change'
+$step7AuditSentence = 'After every block, refresh and read `<JOB_DIR>\correction-audit.json`; use it to revise unjustified findings, but do not list or record reviews during batching.'
+$step7CompleteSentence = 'Continue checkpointing until the returned JSON reports `"complete": true`, finish every necessary replacement, and confirm the checkpoint remains complete.'
+$reviewStableSentence = 'Begin the final review only after the helper reports `"complete": true`, every replacement is finished, and `corrections.jsonl` is stable.'
+$reviewContentAddressedSentence = 'Reviews are content-addressed, not operation-count based: only changed correction content that gives the current checkpoint a different corrections SHA-256 makes reviews for the old checkpoint inapplicable; a byte-identical replacement keeps the same content hash.'
+$reviewCurrentCheckpointSentence = 'Before finalization, if the current complete, stable checkpoint has a corrections SHA-256 different from the reviewed checkpoint, repeat the final review pass against the current checkpoint.'
+$pairingSentence = 'Both `complete` and `incomplete` require every raw row to have one timestamp-matched correction; `incomplete` is not a prefix.'
+$skillLocalMarkerSentence = 'Local uncertainty markers (`' + $suspectEllipsisMarker + '` or `' + $inaudibleMarker + '`) may remain in `complete` after every other gate passes.'
+$skillWholeRowSentence = 'A strict whole-row substitution consisting of a single `' + $inaudibleMarker + '` must use `incomplete` and may proceed without fabricating an audio review for that informational finding.'
+$skillOtherHighSentence = 'Every other current high-risk finding in an incomplete job still requires a current confirmed review.'
+$outputBatchingSentence = 'During batching, refresh and read `correction-audit.json` after every checkpoint; use its findings to revise unjustified corrections, but do not list or record reviews yet.'
+$statusPairingSentence = 'Both `complete` and `incomplete` require one timestamp-matched correction row for every raw row; `incomplete` is not a correction prefix.'
+$statusLocalMarkerSentence = 'A local `' + $suspectEllipsisMarker + '` or `' + $inaudibleMarker + '` marker inside otherwise meaningful text may still be `complete` after every other gate passes.'
+$statusEligibilitySentence = 'The strict whole-row exemption applies only when the correction text contains exactly one `' + $inaudibleMarker + '`, its `uncertainties` array contains exactly one entry with that matching marker and a nonempty note, and every character surrounding the marker has a Unicode category beginning with `Z` or `P`.'
+$statusNoExemptionSentence = 'Letters, numbers, Han characters, emoji, mathematical or currency symbols, control or zero-width characters, `' + $suspectEllipsisMarker + '`, duplicate `' + $inaudibleMarker + '` markers, extra semantic content, and partial rows that mix ordinary text with `' + $inaudibleMarker + '` receive no exemption; partial rows retain ordinary protected-token and semantic-loss auditing.'
+$statusStrictReviewSentence = 'A qualifying strict whole-row substitution must use `incomplete` and does not require an audio review for its informational finding; every other high-risk finding in that incomplete job still requires a current confirmed audio review.'
+$persistentStateSentence = 'Persistent intermediate state, including metadata, audio, clips, corrections, logs, and archives, belongs under the runtime root, normally inside its job directory.'
+$atomicPartialSentence = 'Atomic writers may briefly create owned `.partial-*` files beside their target, including in the formal directory.'
+$quarantineSentence = 'Only the corrected-transcript finalizer''s own stale formal partial is quarantined on retry; do not generalize that behavior to other partial files.'
+$twoFilesSentence = 'After successful finalization, the formal directory still contains exactly the two files above.'
+$rawNormalizationSentence = 'During preparation, remove SenseVoice control tags such as `<|zh|>` and trim surrounding whitespace; preserve all remaining recognized text unchanged.'
+$faithfulLocalSentence = 'A local `' + $suspectXMarker + '` or `' + $inaudibleMarker + '` marker inside otherwise meaningful text may remain in a `complete` transcript after every other gate passes.'
+$faithfulWholeRowSentence = 'A whole-row substitution consisting of a single `' + $inaudibleMarker + '`, with only ordinary Unicode whitespace or punctuation around it, is an abstention: it forces `incomplete` and does not need' + $emDash + 'and must not invent' + $emDash + 'an audio review for that informational finding.'
 
-Assert-ContractPattern -Text $statusContract -Pattern 'Both.*complete.*incomplete.*one timestamp-matched correction row for every raw row.*incomplete.*not.*prefix' -Message 'output contract must require complete row coverage for both statuses'
-Assert-ContractPattern -Text $statusContract -Pattern ('local.*' + [regex]::Escape($suspectMarker) + '.*' + [regex]::Escape($inaudibleMarker) + '.*complete.*other.*gate') -Message 'output contract must permit local uncertainty in a complete result after all other gates'
-Assert-ContractPattern -Text $statusContract -Pattern ('whole-row.*single.*' + [regex]::Escape($inaudibleMarker) + '.*incomplete.*without.*audio review') -Message 'output contract must define the strict whole-row inaudible incomplete path'
-Assert-ContractPattern -Text $statusContract -Pattern 'Other high-risk.*incomplete.*current.*review' -Message 'output contract must keep ordinary high-risk review gates for incomplete results'
-
-Assert-ContractPattern -Text $formalDirectoryContract -Pattern 'Persistent intermediate state.*runtime root' -Message 'output contract must place persistent intermediate state under the runtime root'
-Assert-ContractPattern -Text $formalDirectoryContract -Pattern 'owned `\.partial-\*`.*beside.*target.*formal directory' -Message 'output contract must describe short-lived owned atomic-writer partials beside their targets'
-Assert-ContractPattern -Text $formalDirectoryContract -Pattern 'Only.*corrected-transcript finalizer.*own stale formal partial.*quarantine' -Message 'output contract must scope stale formal partial quarantine to the corrected finalizer'
-Assert-ContractPattern -Text $formalDirectoryContract -Pattern 'successful.*formal directory.*exactly.*two files' -Message 'output contract must preserve the two-file successful formal directory'
-if ($formalDirectoryContract -match 'all partial files.*runtime job directory') {
-    throw 'output contract must not claim that every partial file stays in the runtime job directory'
+foreach ($contract in @(
+    @{ Text = $skillStep7; Sentence = $step7AuditSentence; Label = 'Skill step 7 audit-only batching' },
+    @{ Text = $skillStep7; Sentence = $step7CompleteSentence; Label = 'Skill step 7 complete replacement loop' },
+    @{ Text = $skillStep8; Sentence = $reviewStableSentence; Label = 'Skill step 8 stable final review timing' },
+    @{ Text = $skillStep8; Sentence = $reviewContentAddressedSentence; Label = 'Skill step 8 content-addressed reviews' },
+    @{ Text = $skillStep8; Sentence = $reviewCurrentCheckpointSentence; Label = 'Skill step 8 current-checkpoint final review' },
+    @{ Text = $skillStep9; Sentence = $pairingSentence; Label = 'Skill step 9 full pairing' },
+    @{ Text = $skillStep9; Sentence = $skillLocalMarkerSentence; Label = 'Skill step 9 local uncertainty' },
+    @{ Text = $skillStep9; Sentence = $skillWholeRowSentence; Label = 'Skill step 9 strict whole-row status' },
+    @{ Text = $skillStep9; Sentence = $skillOtherHighSentence; Label = 'Skill step 9 other high-risk review' },
+    @{ Text = $reviewTimingContract; Sentence = $outputBatchingSentence; Label = 'output batching review timing' },
+    @{ Text = $reviewTimingContract; Sentence = $reviewStableSentence; Label = 'output stable final review timing' },
+    @{ Text = $reviewTimingContract; Sentence = $reviewContentAddressedSentence; Label = 'output content-addressed reviews' },
+    @{ Text = $reviewTimingContract; Sentence = $reviewCurrentCheckpointSentence; Label = 'output current-checkpoint final review' },
+    @{ Text = $statusContract; Sentence = $statusPairingSentence; Label = 'output status full pairing' },
+    @{ Text = $statusContract; Sentence = $statusLocalMarkerSentence; Label = 'output status local uncertainty' },
+    @{ Text = $statusContract; Sentence = $statusEligibilitySentence; Label = 'output strict whole-row eligibility' },
+    @{ Text = $statusContract; Sentence = $statusNoExemptionSentence; Label = 'output strict whole-row exclusions' },
+    @{ Text = $statusContract; Sentence = $statusStrictReviewSentence; Label = 'output strict whole-row review boundary' },
+    @{ Text = $formalDirectoryContract; Sentence = $persistentStateSentence; Label = 'output persistent runtime state' },
+    @{ Text = $formalDirectoryContract; Sentence = $atomicPartialSentence; Label = 'output owned atomic partials' },
+    @{ Text = $formalDirectoryContract; Sentence = $quarantineSentence; Label = 'output scoped quarantine' },
+    @{ Text = $formalDirectoryContract; Sentence = $twoFilesSentence; Label = 'output successful two-file directory' },
+    @{ Text = $rawEvidenceContract; Sentence = $rawNormalizationSentence; Label = 'output raw normalization' },
+    @{ Text = $faithfulUncertainty; Sentence = $faithfulLocalSentence; Label = 'faithful local uncertainty boundary' },
+    @{ Text = $faithfulUncertainty; Sentence = $faithfulWholeRowSentence; Label = 'faithful whole-row abstention boundary' }
+)) {
+    Assert-UniqueContractSentence -Text $contract.Text -Sentence $contract.Sentence -Label $contract.Label
 }
 
-Assert-ContractPattern -Text $rawEvidenceContract -Pattern 'Remove.*SenseVoice control tags.*trim.*surrounding whitespace.*preserve.*remaining.*text' -Message 'raw evidence contract must describe control-tag removal and surrounding-whitespace trimming'
 if ($rawEvidenceContract -match 'byte-for-byte') {
     throw 'raw evidence contract must not claim byte-for-byte preservation before normalization'
 }
@@ -379,9 +471,6 @@ foreach ($forbidden in @(
         throw "faithful policy must stay semantic and omit helper command details: $forbidden"
     }
 }
-Assert-ContractPattern -Text $faithfulUncertainty -Pattern ('local.*' + [regex]::Escape($suspectMarker) + '.*' + [regex]::Escape($inaudibleMarker) + '.*complete.*other.*gate') -Message 'faithful policy must define the local uncertainty boundary'
-Assert-ContractPattern -Text $faithfulUncertainty -Pattern ('whole-row.*single.*' + [regex]::Escape($inaudibleMarker) + '.*incomplete.*not.*audio review') -Message 'faithful policy must define whole-row abstention without fabricated review evidence'
-
 foreach ($duplicate in @(
     'Do not overwrite raw evidence to make it resemble the correction.',
     'Do not add a summary, outline, teaching note, or content analysis.',
@@ -392,23 +481,45 @@ foreach ($duplicate in @(
     }
 }
 
-if ($readme.Contains($oldPythonTestClaim)) {
-    throw 'README must not retain the old 74-test verification claim'
-}
-$stableWord = [string][char]0x7A33 + [char]0x5B9A
-$unifiedWord = [string][char]0x7EDF + [char]0x4E00
-$relistenWord = [string][char]0x590D + [char]0x542C
-Assert-ContractPattern -Text ([regex]::Replace($readme, '\s+', ' ')) -Pattern ("checkpoint.*$stableWord.*$unifiedWord.*$relistenWord") -Message 'README must say risk review is unified after every checkpoint is stable'
-$otherWord = [string][char]0x5176 + [char]0x4ED6
-$cannotClaimWord = [string][char]0x65E0 + [char]0x6CD5 + [char]0x58F0 + [char]0x660E
-$reliableWord = [string][char]0x53EF + [char]0x9760
-Assert-ContractPattern -Text ([regex]::Replace($readme, '\s+', ' ')) -Pattern ("$otherWord.*$cannotClaimWord.*$reliableWord.*" + [regex]::Escape('`incomplete`')) -Message 'README must not imply whole-row inaudibility is the only reason for incomplete status'
+$readmeRiskFeatureSentence = '"**\u6821\u8ba2\u98ce\u9669\u5ba1\u8ba1**\uff1a\u81ea\u52a8\u6807\u8bb0\u6570\u5b57\u3001\u5b8c\u6574\u65e5\u671f\u3001\u91d1\u989d\u3001\u62c9\u4e01\u6807\u8bc6\u7b26\u7684\u589e\u5220\u4e0e\u6362\u5e8f\uff0c\u4ee5\u53ca\u5927\u6bb5\u5220\u9664\u548c\u91cd\u5199\uff1b\u7b49\u5168\u90e8\u6821\u8ba2 checkpoint \u7a33\u5b9a\u540e\uff0c\u518d\u7edf\u4e00\u9010\u6761\u590d\u542c\u5f53\u524d\u9ad8\u98ce\u9669\u53d1\u73b0\u5e76\u8bb0\u5f55\u3002"' | ConvertFrom-Json
+$readmeHighRiskClipSentence = '"\u6bcf\u6761\u9700\u590d\u6838\u7684\u9ad8\u98ce\u9669\u53d1\u73b0\u90fd\u5e26\u6709\u5bf9\u5e94\u97f3\u9891\u7247\u6bb5\uff1b\u6700\u7ec8\u590d\u542c\u8bb0\u5f55\u7ed1\u5b9a\u539f\u7a3f\u3001\u6821\u8ba2\u7a3f\u548c\u97f3\u9891 SHA-256\u3002"' | ConvertFrom-Json
+$readmeIncompleteSentence = '"\u5176\u4ed6\u4efb\u4f55\u65e0\u6cd5\u58f0\u660e\u6574\u6bb5\u5f55\u97f3\u5df2\u53ef\u9760\u6821\u8ba2\u5b8c\u6210\u7684\u60c5\u51b5\u4e5f\u4f7f\u7528 `incomplete`\u3002"' | ConvertFrom-Json
+Assert-UniqueContractSentence -Text $readme -Sentence $readmeRiskFeatureSentence -Label 'README stable high-risk review timing'
+Assert-UniqueContractSentence -Text $readme -Sentence $readmeHighRiskClipSentence -Label 'README high-risk clip scope'
+Assert-UniqueContractSentence -Text $readme -Sentence $readmeIncompleteSentence -Label 'README nonexclusive incomplete status'
 
 $designPath = Join-Path $repo 'docs/superpowers/specs/2026-08-14-contract-cleanup-v1-1-2-design.md'
+$designQuarantineSentence = 'Only the corrected-transcript finalizer''s own stale formal partial is quarantined on retry, and successful delivery still contains exactly two files.'
+$designReviewSentence = 'Review validity is content-addressed, not operation-count based: only changed correction content that gives the current complete checkpoint a different corrections SHA-256 makes old reviews inapplicable and requires the final review pass again; a byte-identical replacement keeps the same content hash.'
 $design = Get-Content -LiteralPath $designPath -Raw -Encoding utf8
-Assert-ContractPattern -Text ([regex]::Replace($design, '\s+', ' ')) -Pattern 'corrected-transcript finalizer.*own stale formal partial.*quarantine' -Message 'design must scope stale formal partial quarantine to the corrected-transcript finalizer'
+Assert-UniqueContractSentence -Text $design -Sentence $designQuarantineSentence -Label 'design scoped formal partial quarantine'
+Assert-UniqueContractSentence -Text $design -Sentence $designReviewSentence -Label 'design content-addressed review validity'
 if ($design.Contains('interruption remnants are quarantined on retry')) {
     throw 'design must not generalize quarantine to every interruption remnant'
+}
+
+$oppositeReviewSentence = 'Reviews are never content-addressed and do not remain valid after a byte-identical replacement.'
+$mutatedStep8 = $skillStep8.Replace($reviewContentAddressedSentence, $oppositeReviewSentence)
+if ($mutatedStep8 -ceq $skillStep8) {
+    throw 'negative exact-sentence self-test could not create its in-memory mutation'
+}
+$oppositeWasRejected = $false
+try {
+    Assert-UniqueContractSentence -Text $mutatedStep8 -Sentence $reviewContentAddressedSentence -Label 'negative content-addressed review self-test'
+} catch {
+    $oppositeWasRejected = $true
+}
+if (-not $oppositeWasRejected) {
+    throw 'exact contract assertion accepted a contradictory never/do not sentence'
+}
+
+$prefixedReviewSentence = 'Do not ' + $reviewContentAddressedSentence
+if ((Get-ContractSentenceCount -Text $prefixedReviewSentence -Sentence $reviewContentAddressedSentence) -ne 0) {
+    throw 'exact contract assertion accepted a Do not prefix around the canonical sentence'
+}
+$suffixedReviewSentence = $reviewContentAddressedSentence + ' This is false.'
+if ((Get-ContractSentenceCount -Text $suffixedReviewSentence -Sentence $reviewContentAddressedSentence) -ne 0) {
+    throw 'exact contract assertion accepted a contradictory suffix after the canonical sentence'
 }
 
 $workflowRequired = @(

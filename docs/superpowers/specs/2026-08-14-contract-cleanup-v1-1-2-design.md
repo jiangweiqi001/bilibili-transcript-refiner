@@ -16,7 +16,9 @@ Local `[疑似：…]` or `[听不清]` markers inside otherwise meaningful text
 
 ### Review timing
 
-Each correction checkpoint refreshes the audit. During batching, the agent uses findings to revise unjustified changes but does not persist audio confirmations yet, because the review state is bound to the SHA-256 of the entire correction file. After all rows are installed and the checkpoint is stable, the agent lists current findings, replays each returned clip, and records finding-level confirmations once. Any later replacement or append invalidates those reviews and requires the final review pass again.
+Each correction checkpoint refreshes the audit. During batching, the agent uses findings to revise unjustified changes but does not persist audio confirmations yet, because the review state is bound to the SHA-256 of the entire correction file. After all rows are installed and the checkpoint is stable, the agent lists current high-risk findings, replays each returned clip, and records finding-level confirmations once.
+
+Review validity is content-addressed, not operation-count based: only changed correction content that gives the current complete checkpoint a different corrections SHA-256 makes old reviews inapplicable and requires the final review pass again; a byte-identical replacement keeps the same content hash.
 
 ### Documentation ownership
 
@@ -30,7 +32,9 @@ Operational commands may appear in `SKILL.md` and `output-contract.md` because a
 ### Accuracy fixes
 
 - Keep the Markdown example's `vad_model_version: "6840bae"`; it matches the pinned production asset. The `main` value in finalizer tests is synthetic fixture data, not a release value.
-- Persistent metadata, clips, logs, archives, and resumable partial state stay under the runtime root. Atomic installation may briefly create an owned temporary beside a formal target. Only the corrected-transcript finalizer's own stale formal partial is quarantined on retry, and successful delivery still contains exactly two files.
+- Persistent metadata, clips, logs, archives, and resumable partial state stay under the runtime root.
+- Atomic installation may briefly create an owned temporary beside a formal target.
+- Only the corrected-transcript finalizer's own stale formal partial is quarantined on retry, and successful delivery still contains exactly two files.
 - Raw ASR text is semantically preserved after SenseVoice control-tag removal and surrounding-whitespace trimming; the documentation no longer claims byte-for-byte preservation before those normalization steps.
 
 ## Acceptance
