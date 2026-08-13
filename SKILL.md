@@ -17,13 +17,14 @@ Support Windows only. Process one video/page per invocation. For multipart URLs,
 
 ## Workflow
 
-1. Read [references/output-contract.md](references/output-contract.md) completely.
-2. Run `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap_runtime.ps1`. Keep its SenseVoiceSmall model, tools, jobs, and audio outside the requested output root.
-3. Run `python -X utf8 scripts/prepare_transcript.py --url "<URL>" --output-root "<DIR>"`. Read `job_dir` from its JSON output. Do not use `--rerun-asr` unless the user explicitly asks to replace successful ASR evidence.
-4. Read [references/faithful-correction.md](references/faithful-correction.md) completely.
-5. Correct the job's raw segments chronologically and checkpoint `corrections.jsonl` atomically in the job directory after each block. Resume at the first missing correction row; keep earlier accepted rows unchanged. Preserve one correction row per raw row and identical timestamps. If explicit ASR replacement changed the raw hash, archive the old correction state outside the formal output and start correction again.
-6. Run `python -X utf8 scripts/finalize_transcript.py --job-dir "<JOB_DIR>" --output-root "<DIR>" --status complete` only after every row is corrected and every uncertainty marker is listed. Use `--status incomplete --incomplete-reason "<REASON>"` when audio quality prevents a reliable full result.
-7. Validate that the formal directory contains exactly `raw-transcript.jsonl` and `corrected-transcript.md`, then report both paths.
+1. Resolve the directory containing the loaded `SKILL.md` as `<SKILL_DIR>`. Never assume the shell current working directory is the Skill directory.
+2. Read [references/output-contract.md](references/output-contract.md) completely from `"<SKILL_DIR>\references\output-contract.md"`.
+3. Run `powershell -NoProfile -ExecutionPolicy Bypass -File "<SKILL_DIR>\scripts\bootstrap_runtime.ps1"`. Keep its SenseVoiceSmall model, tools, jobs, and audio outside the requested output root.
+4. Run `python -X utf8 "<SKILL_DIR>\scripts\prepare_transcript.py" --url "<URL>" --output-root "<DIR>"`. Read `job_dir` from its JSON output. Do not use `--rerun-asr` unless the user explicitly asks to replace successful ASR evidence.
+5. Read [references/faithful-correction.md](references/faithful-correction.md) completely from `"<SKILL_DIR>\references\faithful-correction.md"`.
+6. Correct the job's raw segments chronologically and checkpoint `corrections.jsonl` atomically in the job directory after each block. Resume at the first missing correction row; keep earlier accepted rows unchanged. Preserve one correction row per raw row and identical timestamps. If explicit ASR replacement changed the raw hash, archive the old correction state outside the formal output and start correction again.
+7. Run `python -X utf8 "<SKILL_DIR>\scripts\finalize_transcript.py" --job-dir "<JOB_DIR>" --output-root "<DIR>" --status complete` only after every row is corrected and every uncertainty marker is listed. Use `--status incomplete --incomplete-reason "<REASON>"` when audio quality prevents a reliable full result.
+8. Validate that the formal directory contains exactly `raw-transcript.jsonl` and `corrected-transcript.md`, then report both paths.
 
 ## Non-negotiable fidelity
 

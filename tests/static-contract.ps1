@@ -24,8 +24,13 @@ $required = @(
     'references/faithful-correction.md',
     'references/output-contract.md'
     'full bilibili.com/video/BV'
-    'python -X utf8 scripts/prepare_transcript.py --url "<URL>" --output-root "<DIR>"'
-    'python -X utf8 scripts/finalize_transcript.py --job-dir "<JOB_DIR>" --output-root "<DIR>" --status complete'
+    '<SKILL_DIR>'
+    'Never assume the shell current working directory is the Skill directory.'
+    '"<SKILL_DIR>\references\output-contract.md"'
+    '"<SKILL_DIR>\references\faithful-correction.md"'
+    'powershell -NoProfile -ExecutionPolicy Bypass -File "<SKILL_DIR>\scripts\bootstrap_runtime.ps1"'
+    'python -X utf8 "<SKILL_DIR>\scripts\prepare_transcript.py" --url "<URL>" --output-root "<DIR>"'
+    'python -X utf8 "<SKILL_DIR>\scripts\finalize_transcript.py" --job-dir "<JOB_DIR>" --output-root "<DIR>" --status complete'
 )
 foreach ($needle in $required) {
     if (-not $skill.Contains($needle)) {
@@ -66,17 +71,26 @@ if (-not (Test-Path -LiteralPath $readmePath -PathType Leaf)) {
 }
 $readme = Get-Content -LiteralPath $readmePath -Raw -Encoding utf8
 $functionHeading = '## ' + [char]0x529F + [char]0x80FD
-$highlightHeading = '## ' + [char]0x4EAE + [char]0x70B9
-$usageHeading = '## ' + [char]0x4F7F + [char]0x7528 + [char]0x793A + [char]0x4F8B
+$firstRunHeading = '## ' + [char]0x9996 + [char]0x6B21 + [char]0x8FD0 + [char]0x884C
+$automaticDownloadClaim = [string][char]0x81EA + [char]0x52A8 + [char]0x4E0B + [char]0x8F7D + [char]0x4E94 + [char]0x4E2A
 foreach ($needle in @(
     $functionHeading,
-    $highlightHeading,
-    $usageHeading,
+    $firstRunHeading,
     'SenseVoiceSmall',
     'Codex',
     'raw-transcript.jsonl',
     'corrected-transcript.md',
-    '$bilibili-transcript-refiner'
+    '$bilibili-transcript-refiner',
+    'Windows 10/11 x64',
+    'Python 3.11+',
+    'PowerShell 5.1+',
+    'AVX2',
+    '372 MiB',
+    '700 MiB',
+    '$skill-installer',
+    '$HOME/.agents/skills',
+    $automaticDownloadClaim,
+    '%PUBLIC%\bilibili-transcript-refiner\users\<user-key>\runtime-v1'
 )) {
     if (-not $readme.Contains($needle)) {
         throw "missing README contract: $needle"
