@@ -105,6 +105,58 @@ class RenderingTests(unittest.TestCase):
                 status="complete",
             )
 
+    def test_complete_rejects_whole_row_inaudible(self):
+        marker = "[听不清]"
+        corrections = [
+            Correction(
+                0,
+                18_000,
+                marker,
+                (Uncertainty(marker, "整段音频无法可靠辨认。"),),
+            )
+        ]
+
+        with self.assertRaisesRegex(ValueError, "status incomplete"):
+            render_corrected(
+                self.metadata, self.raw[:1], corrections, status="complete"
+            )
+
+    def test_pairing_precedes_whole_row_inaudible_status_gate(self):
+        marker = "[听不清]"
+        corrections = [
+            Correction(
+                0,
+                18_000,
+                marker,
+                (Uncertainty(marker, "整段音频无法可靠辨认。"),),
+            )
+        ]
+
+        with self.assertRaisesRegex(ValueError, "count|timestamps"):
+            render_corrected(
+                self.metadata, self.raw, corrections, status="complete"
+            )
+
+    def test_complete_allows_partial_inaudible_marker(self):
+        marker = "[听不清]"
+        corrections = [
+            Correction(
+                0,
+                18_000,
+                f"大家好，{marker}，今天开始。",
+                (Uncertainty(marker, "仅这一小段无法可靠辨认。"),),
+            ),
+            Correction(18_000, 25_000, self.raw[1].text, ()),
+            Correction(25_000, 30_000, self.raw[2].text, ()),
+        ]
+
+        doc = render_corrected(
+            self.metadata, self.raw, corrections, status="complete"
+        )
+
+        self.assertIn('status: "complete"', doc)
+        self.assertIn(f"大家好，{marker}，今天开始。", doc)
+
     def test_checked_in_fixture_renders_the_contract(self):
         fixtures = Path(__file__).parent / "fixtures"
         raw = read_jsonl(fixtures / "raw-transcript.jsonl")
@@ -219,6 +271,27 @@ class FinalizationTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def whole_row_inaudible_corrections(self, *, second_text="原始二。"):
+        return [
+            {
+                "start": "00:00:00.000",
+                "end": "00:00:01.000",
+                "text": "[听不清]",
+                "uncertainties": [
+                    {
+                        "marker": "[听不清]",
+                        "note": "该段音频无法可靠辨认。",
+                    }
+                ],
+            },
+            {
+                "start": "00:00:01.200",
+                "end": "00:00:02.200",
+                "text": second_text,
+                "uncertainties": [],
+            },
+        ]
+
     def test_finalizes_atomically_and_keeps_exactly_two_files(self):
         corrected = finalize_transcript(self.job, self.output, status="complete")
         self.assertEqual(corrected, (self.formal / "corrected-transcript.md").resolve())
@@ -255,6 +328,106 @@ class FinalizationTests(unittest.TestCase):
         self.assertIn(f'vad_model_sha256: "{"1" * 64}"', document)
         self.assertRegex(document, r'generated_at: "\d{4}-\d{2}-\d{2}T')
         self.assertIn("correction_high_risk_reviewed: false", document)
+
+    def test_complete_rejects_whole_row_inaudible_but_incomplete_finalizes(self):
+        self.write_corrections(self.whole_row_inaudible_corrections())
+
+        with self.assertRaisesRegex(ValueError, "status incomplete"):
+            finalize_transcript(self.job, self.output, status="complete")
+
+        reviews_path = self.job / "correction-reviews.json"
+        self.assertFalse(reviews_path.exists())
+        reason = "首段音频无法可靠辨认。"
+        corrected = finalize_transcript(
+            self.job,
+            self.output,
+            status="incomplete",
+            incomplete_reason=reason,
+        )
+
+        self.assertFalse(reviews_path.exists())
+        document = corrected.read_text(encoding="utf-8")
+        self.assertIn('status: "incomplete"', document)
+        self.assertIn(reason, document)
+        self.assertIn("[听不清]", document)
+        self.assertIn("correction_high_risk_reviewed: false", document)
+        audit = json.loads(
+            (self.job / "correction-audit.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(audit["high_risk_count"], 0)
+        self.assertEqual(
+            [(item["code"], item["severity"]) for item in audit["findings"]],
+            [("explicit-inaudible-substitution", "info")],
+        )
+        job_value = json.loads(
+            (self.job / "job.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(job_value["correction_state"], "incomplete")
+        self.assertFalse(job_value["correction_high_risk_reviewed"])
+
+    def test_complete_rejects_whole_row_inaudible_even_with_stale_review(self):
+        self.write_corrections(self.whole_row_inaudible_corrections())
+        write_json(
+            self.job / "correction-reviews.json",
+            {
+                "schema_version": 1,
+                "raw_sha256": "0" * 64,
+                "corrections_sha256": "1" * 64,
+                "reviews": [],
+            },
+        )
+
+        with self.assertRaisesRegex(ValueError, "status incomplete"):
+            finalize_transcript(self.job, self.output, status="complete")
+
+        self.assertFalse((self.formal / "corrected-transcript.md").exists())
+
+    def test_incomplete_still_requires_review_for_other_high_risk_rewrite(self):
+        self.write_corrections(
+            self.whole_row_inaudible_corrections(second_text="完全改写。")
+        )
+        clip = self.job / "runs" / "run-0001" / "clips" / "000001.wav"
+        clip.parent.mkdir(parents=True, exist_ok=True)
+        clip.write_bytes(b"reviewable audio")
+
+        with self.assertRaisesRegex(ValueError, "unreviewed high-risk"):
+            finalize_transcript(
+                self.job,
+                self.output,
+                status="incomplete",
+                incomplete_reason="首段音频无法可靠辨认。",
+            )
+
+        audit = json.loads(
+            (self.job / "correction-audit.json").read_text(encoding="utf-8")
+        )
+        self.assertIn(
+            ("explicit-inaudible-substitution", "info"),
+            [(item["code"], item["severity"]) for item in audit["findings"]],
+        )
+        self.assertGreaterEqual(audit["high_risk_count"], 1)
+
+    def test_incomplete_rejects_prefix_before_writing_audit(self):
+        self.write_corrections(
+            [
+                {
+                    "start": "00:00:00.000",
+                    "end": "00:00:01.000",
+                    "text": "原始一。",
+                    "uncertainties": [],
+                }
+            ]
+        )
+
+        with self.assertRaisesRegex(ValueError, "count|timestamps"):
+            finalize_transcript(
+                self.job,
+                self.output,
+                status="incomplete",
+                incomplete_reason="校订尚未覆盖全部分段。",
+            )
+
+        self.assertFalse((self.job / "correction-audit.json").exists())
 
     def test_finalize_rejects_a_concurrent_job_transition(self):
         with exclusive_job_lock(self.job / "job.lock"):

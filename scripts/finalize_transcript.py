@@ -18,6 +18,7 @@ try:
         Correction,
         Uncertainty,
         audit_corrections,
+        is_whole_row_inaudible,
         read_corrections,
         validate_pairing,
         write_audit_report,
@@ -36,6 +37,7 @@ except ModuleNotFoundError:  # Direct execution from scripts/.
         Correction,
         Uncertainty,
         audit_corrections,
+        is_whole_row_inaudible,
         read_corrections,
         validate_pairing,
         write_audit_report,
@@ -120,6 +122,10 @@ def render_corrected(
     if incomplete_reason and ("\n" in incomplete_reason or "\r" in incomplete_reason):
         raise ValueError("incomplete reason must stay on one line")
     _validate_pairing(raw_rows, correction_rows)
+    if status == "complete" and any(
+        is_whole_row_inaudible(row) for row in correction_rows
+    ):
+        raise ValueError("whole-row [听不清] requires status incomplete")
 
     required = ("source_url", "bvid", "page", "title", "uploader", "duration")
     missing = [key for key in required if key not in metadata]
@@ -279,6 +285,7 @@ def _finalize_transcript_locked(
     if not corrections_path.is_file():
         raise FileNotFoundError(f"correction checkpoint is missing: {corrections_path}")
     correction_rows = _read_corrections(corrections_path)
+    _validate_pairing(raw_rows, correction_rows)
     if acknowledge_high_risk:
         raise ValueError(
             "global high-risk acknowledgement is no longer accepted; "
