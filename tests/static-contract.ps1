@@ -77,7 +77,7 @@ if (-not (Test-Path -LiteralPath $readmePath -PathType Leaf)) {
     throw 'README.md is required for the public repository'
 }
 $readme = Get-Content -LiteralPath $readmePath -Raw -Encoding utf8
-$requiredFirstLine = [string][char]0x70B9 + [char]0x70B9 + [char]0x5173 + [char]0x6CE8 + [char]0x8C22 + [char]0x8C22 + [char]0x55B5
+$requiredFirstLine = [string][char]0x70B9 + [char]0x70B9 + [char]0x5173 + [char]0x6CE8 + [char]0x8C22 + [char]0x8C22 + [char]0x55B5 + '~'
 $favoritesWord = [string][char]0x6536 + [char]0x85CF + [char]0x5939
 $classRepWord = [string][char]0x8BFE + [char]0x4EE3 + [char]0x8868
 $uploaderWord = 'UP ' + [char]0x4E3B

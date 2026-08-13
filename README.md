@@ -1,4 +1,4 @@
-点点关注谢谢喵
+点点关注谢谢喵~
 
 # Bilibili Transcript Refiner
 
