@@ -11,6 +11,7 @@ $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 . (Join-Path $PSScriptRoot 'runtime_layout.ps1')
+. (Join-Path $PSScriptRoot 'runtime_acl.ps1')
 if ([string]::IsNullOrWhiteSpace($RuntimeRoot)) {
     $RuntimeRoot = Get-BtrDefaultRuntimeRoot
 }
@@ -229,6 +230,8 @@ if (-not (Test-BtrAsciiPath -Path $RuntimeRoot)) {
 }
 $RuntimeRoot = [IO.Path]::GetFullPath($RuntimeRoot)
 New-Item -ItemType Directory -Path $RuntimeRoot -Force | Out-Null
+Protect-BtrRuntimeAcl -Path $RuntimeRoot
+Assert-BtrRuntimeAcl -Path $RuntimeRoot
 Assert-RuntimeWritable -Path $RuntimeRoot
 if (-not $VerifyOnly) {
     Assert-FreeSpace -Path $RuntimeRoot

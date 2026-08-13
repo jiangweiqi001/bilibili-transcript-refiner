@@ -165,6 +165,9 @@ $bootstrapRequired = @(
     'ExpectedFiles',
     'Invoke-StartupCheck -Executable $ffprobe'
     'Invoke-StartupCheck -Executable $vad'
+    'runtime_acl.ps1'
+    'Protect-BtrRuntimeAcl -Path $RuntimeRoot'
+    'Assert-BtrRuntimeAcl -Path $RuntimeRoot'
 )
 foreach ($needle in $bootstrapRequired) {
     if (-not $bootstrap.Contains($needle)) {
