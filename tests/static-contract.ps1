@@ -353,7 +353,7 @@ function Get-ContractSection {
         [Parameter(Mandatory = $true)][string]$Label
     )
 
-    $pattern = '(?ms)^' + [regex]::Escape($Heading) + '\r?\n(?<body>.*?)(?=^## [^\r\n]+\r?$|\z)'
+    $pattern = '(?ms)^' + [regex]::Escape($Heading) + '[ \t]*\r?\n(?<body>.*?)(?=^##[ \t]+[^\r\n]+\r?$|\z)'
     $matches = [regex]::Matches($Text, $pattern)
     if ($matches.Count -ne 1) {
         throw "contract section must appear exactly once for ${Label}; found: $($matches.Count)"
@@ -367,12 +367,47 @@ function Get-WorkflowStep {
         [Parameter(Mandatory = $true)][int]$Number
     )
 
-    $pattern = '(?ms)^' + $Number + '\. (?<body>.*?)(?=^\d+\. |\z)'
+    $pattern = '(?ms)^' + $Number + '\.[ \t]+(?<body>.*?)(?=^\d+\.[ \t]+|\z)'
     $matches = [regex]::Matches($Workflow, $pattern)
     if ($matches.Count -ne 1) {
         throw "Skill workflow step must appear exactly once for ${Number}; found: $($matches.Count)"
     }
     return $matches[0].Groups['body'].Value
+}
+
+$duplicateSectionRejected = $false
+try {
+    [void](Get-ContractSection -Text "## Heading`nfirst`n`n## Heading   `nsecond`n" -Heading '## Heading' -Label 'horizontal-whitespace duplicate heading self-test')
+} catch {
+    $duplicateSectionRejected = $true
+}
+if (-not $duplicateSectionRejected) {
+    throw 'Get-ContractSection must reject duplicate headings that differ only by trailing horizontal whitespace'
+}
+
+$duplicateStepRejected = $false
+try {
+    [void](Get-WorkflowStep -Workflow "8. x`n8.   y`n9. z`n" -Number 8)
+} catch {
+    $duplicateStepRejected = $true
+}
+if (-not $duplicateStepRejected) {
+    throw 'Get-WorkflowStep must reject duplicate step markers that use different horizontal whitespace widths'
+}
+
+$trailingWhitespaceSection = Get-ContractSection -Text "## Heading`t `nbody`n`n## Next`nnext`n" -Heading '## Heading' -Label 'trailing horizontal-whitespace heading self-test'
+if ((Normalize-ContractText -Text $trailingWhitespaceSection) -cne 'body') {
+    throw 'Get-ContractSection must accept trailing horizontal whitespace on a heading'
+}
+
+$tabbedStep = Get-WorkflowStep -Workflow "8.`talpha`n9.`tbeta`n" -Number 8
+if ((Normalize-ContractText -Text $tabbedStep) -cne 'alpha') {
+    throw 'Get-WorkflowStep must accept horizontal whitespace after a step marker and stop at the next equivalent marker'
+}
+
+$stepWithNestedNumber = Get-WorkflowStep -Workflow "8. outer`n   9. nested`n9. next`n" -Number 8
+if ((Normalize-ContractText -Text $stepWithNestedNumber) -cne 'outer 9. nested') {
+    throw 'Get-WorkflowStep must not treat an indented numbered item as a top-level step marker'
 }
 
 $skillWorkflow = Get-ContractSection -Text $skill -Heading '## Workflow' -Label 'Skill workflow'
@@ -412,6 +447,7 @@ $twoFilesSentence = 'After successful finalization, the formal directory still c
 $rawNormalizationSentence = 'During preparation, remove SenseVoice control tags such as `<|zh|>` and trim surrounding whitespace; preserve all remaining recognized text unchanged.'
 $faithfulLocalSentence = 'A local `' + $suspectXMarker + '` or `' + $inaudibleMarker + '` marker inside otherwise meaningful text may remain in a `complete` transcript after every other gate passes.'
 $faithfulWholeRowSentence = 'A whole-row substitution consisting of a single `' + $inaudibleMarker + '`, with only ordinary Unicode whitespace or punctuation around it, is an abstention: it forces `incomplete` and does not need' + $emDash + 'and must not invent' + $emDash + 'an audio review for that informational finding.'
+$commonReviewReuseSentence = 'Do not reuse reviews when the current corrections SHA-256 differs from the reviewed checkpoint; review only a complete, stable checkpoint.'
 
 foreach ($contract in @(
     @{ Text = $skillStep7; Sentence = $step7AuditSentence; Label = 'Skill step 7 audit-only batching' },
@@ -438,9 +474,19 @@ foreach ($contract in @(
     @{ Text = $formalDirectoryContract; Sentence = $twoFilesSentence; Label = 'output successful two-file directory' },
     @{ Text = $rawEvidenceContract; Sentence = $rawNormalizationSentence; Label = 'output raw normalization' },
     @{ Text = $faithfulUncertainty; Sentence = $faithfulLocalSentence; Label = 'faithful local uncertainty boundary' },
-    @{ Text = $faithfulUncertainty; Sentence = $faithfulWholeRowSentence; Label = 'faithful whole-row abstention boundary' }
+    @{ Text = $faithfulUncertainty; Sentence = $faithfulWholeRowSentence; Label = 'faithful whole-row abstention boundary' },
+    @{ Text = $skillCommonMistakes; Sentence = $commonReviewReuseSentence; Label = 'Skill common-mistake review reuse warning' }
 )) {
     Assert-UniqueContractSentence -Text $contract.Text -Sentence $contract.Sentence -Label $contract.Label
+}
+
+foreach ($obsoleteReviewWarning in @(
+    'after any later correction change',
+    'after every later correction change'
+)) {
+    if ($skill.Contains($obsoleteReviewWarning)) {
+        throw "Skill must not use operation-count review invalidation wording: $obsoleteReviewWarning"
+    }
 }
 
 if ($rawEvidenceContract -match 'byte-for-byte') {

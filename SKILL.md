@@ -54,4 +54,4 @@ Keep `raw-transcript.jsonl` immutable. Never present partial output as a complet
 - Do not download an entire playlist or all multipart pages.
 - Do not pass a `b23.tv` or `bili2233.cn` short link; ask for its full `bilibili.com/video/BV...` target.
 - Do not place binaries, models, WAV files, or job state beside the two deliverables.
-- Do not record high-risk reviews during batching or reuse them after any later correction change; perform the review pass only against the complete, stable checkpoint.
+- Do not reuse reviews when the current corrections SHA-256 differs from the reviewed checkpoint; review only a complete, stable checkpoint.
