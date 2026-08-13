@@ -21,6 +21,13 @@ Immediately after `$readme = Get-Content ...`, add:
 
 ```powershell
 $requiredFirstLine = [string][char]0x70B9 + [char]0x70B9 + [char]0x5173 + [char]0x6CE8 + [char]0x8C22 + [char]0x8C22 + [char]0x55B5
+$favoritesWord = [string][char]0x6536 + [char]0x85CF + [char]0x5939
+$classRepWord = [string][char]0x8BFE + [char]0x4EE3 + [char]0x8868
+$uploaderWord = 'UP ' + [char]0x4E3B
+$tripleActionWord = [string][char]0x4E00 + [char]0x952E + [char]0x4E09 + [char]0x8FDE
+$progressBarWord = [string][char]0x8FDB + [char]0x5EA6 + [char]0x6761
+$noSummaryWord = [string][char]0x4E0D + [char]0x505A + [char]0x7701 + [char]0x6D41 + [char]0x7248
+$onePageClaim = [string][char]0x6BCF + [char]0x6B21 + [char]0x8C03 + [char]0x7528 + [char]0x53EA + [char]0x5904 + [char]0x7406 + [char]0x4E00 + [char]0x4E2A + [char]0x89C6 + [char]0x9891 + [char]0x9875 + [char]0x9762
 $readmeFirstLine = @($readme -split "`r?`n", 2)[0]
 if ($readmeFirstLine -cne $requiredFirstLine) {
     throw 'README first line must be exact'
@@ -43,12 +50,24 @@ $promotionalRequired = @(
     '准确率是多少',
     '{"start":"00:00:12.400","end":"00:00:18.720","text":',
     '[00:00:12.400]',
-    'one video/page per invocation'
+    $onePageClaim
+    $favoritesWord
+    $classRepWord
+    $uploaderWord
+    $tripleActionWord
+    $progressBarWord
+    $noSummaryWord
 )
 foreach ($needle in $promotionalRequired) {
     if (-not $readme.Contains($needle)) {
         throw "missing promotional README contract: $needle"
     }
+}
+if ([regex]::Matches($readme, [regex]::Escape($classRepWord)).Count -ne 1) {
+    throw 'README should use the class-representative phrase exactly once'
+}
+if ($readme.Contains('one video/page per invocation')) {
+    throw 'README video boundary should use natural Chinese'
 }
 ```
 
@@ -80,9 +99,11 @@ Expected: FAIL with `README first line must be exact`.
 ![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078D4)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB)
 
+把收藏夹里那些“以后一定看”的长视频，变成能搜索、能引用、能随时跳回原时间点的文字。再也不用为了找 UP 主说过的一句话，在进度条上反复横跳。
+
 `Bilibili Transcript Refiner` 是一个面向 Codex 的 B 站逐字稿 Skill。它自动完成视频音轨获取、本地语音识别、上下文校订、时间戳保留和结果校验，最终交付原始识别证据与忠实校订稿。
 
-它不是摘要器，也不是“把口语润色成文章”的改写工具。它关注的是：视频里到底说了什么，哪些地方可以确定，哪些地方仍然存疑。
+它不做省流版，也不把口语偷偷润色成文章。它关注的是：视频里到底说了什么，哪些地方可以确定，哪些地方仍然存疑。不用从头手抄，也能核对每一次校订。
 
 ## 为什么需要它
 
@@ -160,6 +181,8 @@ raw-transcript.jsonl + corrected-transcript.md
 - 访谈、播客、直播回放和口述材料整理。
 - 论文调研、事实核对和需要回到原视频时间点的引用。
 - 为字幕制作准备带时间戳的原始底稿。
+- UP 主整理自己的长视频文稿，或给观众补充可搜索的文字入口。
+- 课代表整理知识区内容，同时保留可以回到原片核对的时间点。
 - 希望保留口头表达，而不是只要摘要或文章化改写的内容。
 
 ## 快速开始
@@ -266,7 +289,7 @@ FunASR 要求运行路径只包含 ASCII。若 `%LOCALAPPDATA%` 含中文或其�
 
 - 必须提供完整的 `bilibili.com/video/BV...` 地址。
 - 不直接接受 `b23.tv` 或 `bili2233.cn` 短链接，请先展开成完整 BV 地址。
-- one video/page per invocation：每次处理一个视频页面；带 `p=` 时处理指定分 P，否则处理第 1 P。
+- 每次调用只处理一个视频页面；带 `p=` 时处理指定分 P，否则处理第 1 P。
 - 登录可见、付费、地区限制、已删除或触发 B 站风控的视频仍可能失败。
 - 这不是播放列表批量下载工具。
 
@@ -320,7 +343,7 @@ FunASR 要求运行路径只包含 ASCII。若 `%LOCALAPPDATA%` 含中文或其�
 
 如果这个项目帮你省下了听写和校对时间：
 
-- 给仓库点一个 **Star**，方便以后找到。
+- B 站的一键三连留给认真创作的 UP 主，GitHub 这边也欢迎点个 **Star**，方便以后找到。
 - 分享给同样需要 B 站逐字稿、课程整理或访谈转写的人。
 - 遇到可复现问题，请提交 [GitHub Issue](https://github.com/jiangweiqi001/bilibili-transcript-refiner/issues)，附上 Windows 版本、Python 版本、完整 BV 链接和报错信息。
 

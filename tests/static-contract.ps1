@@ -71,6 +71,13 @@ if (-not (Test-Path -LiteralPath $readmePath -PathType Leaf)) {
 }
 $readme = Get-Content -LiteralPath $readmePath -Raw -Encoding utf8
 $requiredFirstLine = [string][char]0x70B9 + [char]0x70B9 + [char]0x5173 + [char]0x6CE8 + [char]0x8C22 + [char]0x8C22 + [char]0x55B5
+$favoritesWord = [string][char]0x6536 + [char]0x85CF + [char]0x5939
+$classRepWord = [string][char]0x8BFE + [char]0x4EE3 + [char]0x8868
+$uploaderWord = 'UP ' + [char]0x4E3B
+$tripleActionWord = [string][char]0x4E00 + [char]0x952E + [char]0x4E09 + [char]0x8FDE
+$progressBarWord = [string][char]0x8FDB + [char]0x5EA6 + [char]0x6761
+$noSummaryWord = [string][char]0x4E0D + [char]0x505A + [char]0x7701 + [char]0x6D41 + [char]0x7248
+$onePageClaim = [string][char]0x6BCF + [char]0x6B21 + [char]0x8C03 + [char]0x7528 + [char]0x53EA + [char]0x5904 + [char]0x7406 + [char]0x4E00 + [char]0x4E2A + [char]0x89C6 + [char]0x9891 + [char]0x9875 + [char]0x9762
 $readmeFirstLine = @($readme -split "`r?`n", 2)[0]
 if ($readmeFirstLine -cne $requiredFirstLine) {
     throw 'README first line must be exact'
@@ -93,12 +100,24 @@ $promotionalRequired = @(
     ([string][char]0x51C6 + [char]0x786E + [char]0x7387 + [char]0x662F + [char]0x591A + [char]0x5C11),
     '{"start":"00:00:12.400","end":"00:00:18.720","text":',
     '[00:00:12.400]',
-    'one video/page per invocation'
+    $onePageClaim
+    $favoritesWord
+    $classRepWord
+    $uploaderWord
+    $tripleActionWord
+    $progressBarWord
+    $noSummaryWord
 )
 foreach ($needle in $promotionalRequired) {
     if (-not $readme.Contains($needle)) {
         throw "missing promotional README contract: $needle"
     }
+}
+if ([regex]::Matches($readme, [regex]::Escape($classRepWord)).Count -ne 1) {
+    throw 'README should use the class-representative phrase exactly once'
+}
+if ($readme.Contains('one video/page per invocation')) {
+    throw 'README video boundary should use natural Chinese'
 }
 $functionHeading = '## ' + [char]0x529F + [char]0x80FD
 $firstRunHeading = '## ' + [char]0x9996 + [char]0x6B21 + [char]0x8FD0 + [char]0x884C

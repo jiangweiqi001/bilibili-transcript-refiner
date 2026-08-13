@@ -20,6 +20,8 @@ Lead with the outcome: provide one complete Bilibili BV URL and receive timestam
 
 The tone should be energetic and approachable enough to share, while every concrete claim remains supported by the implementation or completed acceptance tests. Do not claim that the entire Codex workflow is offline, that all computers are supported, or that every Bilibili video can bypass login and anti-abuse controls.
 
+Use Bilibili-native emotional language where it creates recognition: the opening may reference saved long videos, progress-bar scrubbing, UP creators, class representatives, and one-click triple support. Keep that voice concentrated in the introduction, use cases, and closing call to action; the technical middle should remain precise and professional. Explicitly say the project does not produce a generic “省流版”.
+
 ## Audience path
 
 The README should serve two overlapping readers without splitting into separate documents:
