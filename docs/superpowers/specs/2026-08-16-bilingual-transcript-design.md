@@ -4,13 +4,13 @@ Date: 2026-08-16
 
 ## Goal
 
-When a Bilibili recording is predominantly English, or contains meaningful English speech, deliver a corrected Markdown transcript that includes both the faithful English transcript and a faithful Chinese translation. Keep Chinese-only behavior unchanged and do not add a local translation model.
+When a Bilibili recording is predominantly English, or a mixed recording contains at least one complete English clause rather than only a name, title, formula, or isolated term, deliver a corrected Markdown transcript that includes both the faithful source transcript and a faithful Chinese translation. Keep Chinese-only behavior unchanged and do not add a local translation model.
 
 ## User-visible behavior
 
 - After ASR preparation, classify the recording as Chinese-only or bilingual from the raw transcript and the user's explicit request.
 - Keep the existing Chinese-only workflow and Markdown shape unchanged.
-- For an English or meaningfully mixed recording, first complete and review the source-language correction checkpoint, then translate the stable corrected rows into Chinese.
+- For an English recording, or a mixed recording meeting the complete-clause rule above, first complete and review the source-language correction checkpoint, then translate the stable corrected rows into Chinese.
 - Render each bilingual row as two self-contained, timestamped lines:
 
   ```markdown
