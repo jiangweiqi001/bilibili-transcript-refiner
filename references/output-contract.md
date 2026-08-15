@@ -11,6 +11,8 @@ corrected-transcript.md
 
 Persistent intermediate state, including metadata, audio, clips, corrections, logs, and archives, belongs under the runtime root, normally inside its job directory.
 
+For bilingual jobs, `translations-zh.jsonl` and temporary translation batches are also runtime state and never become a third formal deliverable.
+
 Atomic writers may briefly create owned `.partial-*` files beside their target, including in the formal directory.
 
 Only the corrected-transcript finalizer's own stale formal partial is quarantined on retry; do not generalize that behavior to other partial files.
@@ -63,6 +65,30 @@ To revise an accepted row, write a replacement batch beginning at that row and u
 python -X utf8 "<SKILL_DIR>\scripts\checkpoint_corrections.py" --raw "<RAW_JSONL>" --checkpoint "<JOB_DIR>\corrections.jsonl" --batch "<BATCH_JSONL>" --replace-from <ROW_INDEX> --expected-corrections-sha256 "<CURRENT_CORRECTIONS_SHA256>"
 ```
 
+## Chinese translation work state
+
+Create this state only for bilingual output and only after the source correction checkpoint is complete, stable, and reviewed. Keep one row per correction under `<JOB_DIR>\translations-zh.jsonl`:
+
+```json
+{"start":"00:00:12.400","end":"00:00:18.720","source_text":"Today we discuss speech recognition.","text_zh":"今天我们讨论语音识别。"}
+```
+
+Keys must appear exactly as `start`, `end`, `source_text`, and `text_zh`. Timestamps must match the corresponding correction, `source_text` must equal that correction's `text` byte for byte, and both text fields must be nonempty single lines. These bindings make a translation stale when its source correction changes.
+
+Install the next block through the translation checkpoint helper:
+
+```powershell
+python -X utf8 "<SKILL_DIR>\scripts\checkpoint_translations.py" --corrections "<JOB_DIR>\corrections.jsonl" --checkpoint "<JOB_DIR>\translations-zh.jsonl" --batch "<TRANSLATION_BATCH_JSONL>"
+```
+
+Resume at the returned `next_index`. Revise a suffix only with the current checkpoint hash:
+
+```powershell
+python -X utf8 "<SKILL_DIR>\scripts\checkpoint_translations.py" --corrections "<JOB_DIR>\corrections.jsonl" --checkpoint "<JOB_DIR>\translations-zh.jsonl" --batch "<TRANSLATION_BATCH_JSONL>" --replace-from <ROW_INDEX> --expected-translations-sha256 "<CURRENT_TRANSLATIONS_SHA256>"
+```
+
+The bilingual finalizer requires a complete translation checkpoint. A prefix, timestamp change, reordered row, empty translation, or stale `source_text` cannot finalize.
+
 ## Review timing
 
 During batching, refresh and read `correction-audit.json` after every checkpoint; use its findings to revise unjustified corrections, but do not list or record reviews yet.
@@ -86,6 +112,8 @@ Each review record also binds the current raw and clip hashes.
 Reviews are content-addressed, not operation-count based: only changed correction content that gives the current checkpoint a different corrections SHA-256 makes reviews for the old checkpoint inapplicable; a byte-identical replacement keeps the same content hash.
 
 Before finalization, if the current complete, stable checkpoint has a corrections SHA-256 different from the reviewed checkpoint, repeat the final review pass against the current checkpoint.
+
+Translation is downstream of acoustic correction review. A translation-only change does not invalidate a current correction review, but any source correction change does invalidate its bound translation rows.
 
 ## Status semantics
 
@@ -155,6 +183,25 @@ status: "complete"
 
 When there are no uncertainties, write `- 无` under `## 存疑处`.
 
+For bilingual output, add these fields before `status`:
+
+```yaml
+output_mode: "bilingual-en-zh"
+translation_mode: "faithful"
+translations_zh_sha256: "<SHA-256>"
+```
+
+Keep the source correction and Chinese translation adjacent for every timestamp:
+
+```markdown
+## 逐字稿
+
+[00:00:12.400] **English:** Today we discuss speech recognition.
+[00:00:12.400] **中文：** 今天我们讨论语音识别。
+```
+
+Add a bilingual fidelity notice stating that Chinese lines translate the stable source correction without summary, explanation, factual repair, or added certainty. For a mixed row already in Chinese, repeat its faithful corrected content in the Chinese line. Continue to derive `## 存疑处` from the source correction checkpoint.
+
 ## Completion checks
 
 - For either status, match every raw row to exactly one correction with the same timestamps.
@@ -162,3 +209,4 @@ When there are no uncertainties, write `- 无` under `## 存疑处`.
 - Ensure the formal directory contains no third file.
 - Wait for a complete, stable checkpoint before the final review. The strict whole-row `[听不清]` informational finding needs no fabricated review; every other current high-risk `finding_id`, including in an incomplete result, must have a current confirmed record in `correction-reviews.json`.
 - Declare completion only after the finalizer succeeds.
+- For bilingual output, require every correction row to have one current source-bound Chinese row, record `translations_zh_sha256`, and finalize with `--bilingual`.

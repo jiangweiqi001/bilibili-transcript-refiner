@@ -51,7 +51,7 @@ if (($keys -join ',') -ne 'name,description') {
     throw "SKILL.md frontmatter must contain only name and description; got: $($keys -join ',')"
 }
 
-foreach ($ref in @('references/faithful-correction.md', 'references/output-contract.md')) {
+foreach ($ref in @('references/faithful-correction.md', 'references/faithful-translation-zh.md', 'references/output-contract.md')) {
     if (-not (Test-Path -LiteralPath (Join-Path $repo $ref) -PathType Leaf)) {
         throw "missing reference: $ref"
     }
@@ -116,7 +116,7 @@ $promotionalRequired = @(
     'b23.tv',
     'bili2233.cn',
     '46',
-    '2026-08-14',
+    '2026-08-16',
     'Star',
     'github.com/jiangweiqi001/bilibili-transcript-refiner/issues',
     'scripts/runtime-assets.json',
@@ -286,8 +286,56 @@ foreach ($id in @('ffmpeg', 'funasr_avx2')) {
 }
 
 $correctionGuide = Get-Content -LiteralPath (Join-Path $repo 'references/faithful-correction.md') -Raw -Encoding utf8
+$translationGuide = Get-Content -LiteralPath (Join-Path $repo 'references/faithful-translation-zh.md') -Raw -Encoding utf8
 $outputGuide = Get-Content -LiteralPath (Join-Path $repo 'references/output-contract.md') -Raw -Encoding utf8
-$workflow = $skill + "`n" + $correctionGuide + "`n" + $outputGuide
+$workflow = $skill + "`n" + $correctionGuide + "`n" + $translationGuide + "`n" + $outputGuide
+$bilingualWord = [string][char]0x4E2D + [char]0x82F1 + [char]0x53CC + [char]0x8BED
+$noLocalTranslationModel = [string][char]0x4E0D + [char]0x65B0 + [char]0x589E + [char]0x672C + [char]0x5730 + [char]0x7FFB + [char]0x8BD1 + [char]0x6A21 + [char]0x578B
+$chineseLineLabel = '**' + [char]0x4E2D + [char]0x6587 + [char]0xFF1A + '**'
+
+foreach ($needle in @(
+    'references/faithful-translation-zh.md',
+    'complete English clause',
+    'isolated English',
+    'checkpoint_translations.py',
+    'translations-zh.jsonl',
+    '--bilingual'
+)) {
+    if (-not $skill.Contains($needle)) {
+        throw "missing bilingual Skill contract: $needle"
+    }
+}
+foreach ($needle in @(
+    'Translate the stable corrected source row, not the raw ASR.',
+    'Preserve every claim, number, name, qualification, repetition, hesitation, and self-correction.',
+    'Do not summarize, explain, annotate, fact-correct, or add background knowledge.',
+    'Do not silently omit difficult phrases or make uncertain source wording definite.'
+)) {
+    if (-not $translationGuide.Contains($needle)) {
+        throw "missing faithful Chinese translation contract: $needle"
+    }
+}
+foreach ($needle in @(
+    '"source_text"',
+    '"text_zh"',
+    'output_mode: "bilingual-en-zh"',
+    'translation_mode: "faithful"',
+    'translations_zh_sha256:',
+    '**English:**',
+    $chineseLineLabel
+)) {
+    if (-not $outputGuide.Contains($needle)) {
+        throw "missing bilingual output contract: $needle"
+    }
+}
+foreach ($needle in @($bilingualWord, $noLocalTranslationModel, 'translations-zh.jsonl')) {
+    if (-not $readme.Contains($needle)) {
+        throw "missing bilingual README contract: $needle"
+    }
+}
+if (-not $ui.Contains(([string][char]0x4E2D + [char]0x82F1))) {
+    throw 'Skill UI metadata must mention Chinese-English output'
+}
 
 function Normalize-ContractText {
     param([Parameter(Mandatory = $true)][string]$Text)

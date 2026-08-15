@@ -2,7 +2,7 @@
 
 # Bilibili Transcript Refiner
 
-> 给我一个完整的 B 站 BV 视频链接，还你一份带时间戳、可追溯、严格忠实的逐字稿。
+> 给我一个完整的 B 站 BV 视频链接，还你一份带时间戳、可追溯、严格忠实的逐字稿；英文内容还会附上中文对照。
 
 [![test](https://github.com/jiangweiqi001/bilibili-transcript-refiner/actions/workflows/test.yml/badge.svg)](https://github.com/jiangweiqi001/bilibili-transcript-refiner/actions/workflows/test.yml)
 ![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078D4)
@@ -10,7 +10,7 @@
 
 把收藏夹里那些“以后一定看”的长视频，变成能搜索、能引用、能随时跳回原时间点的文字。再也不用为了找 UP 主说过的一句话，在进度条上反复横跳。
 
-`Bilibili Transcript Refiner` 是一个面向 Codex 的 B 站逐字稿 Skill。它自动完成视频音轨获取、本地语音识别、上下文校订、时间戳保留和结果校验，最终交付原始识别证据与忠实校订稿。
+`Bilibili Transcript Refiner` 是一个面向 Codex 的 B 站逐字稿 Skill。它自动完成视频音轨获取、本地语音识别、上下文校订、时间戳保留和结果校验，最终交付原始识别证据与忠实校订稿；遇到英文视频时，还会生成逐段对齐的中英双语结果。
 
 它不做省流版，也不把口语偷偷润色成文章。它关注的是：视频里到底说了什么，哪些地方可以确定，哪些地方仍然存疑。不用从头手抄，也能核对每一次校订。
 
@@ -18,10 +18,11 @@
 
 直接使用通用 ASR，常见结果是术语、人名和断句错误；直接让 AI 改写，又容易把原话悄悄变成更流畅但不再忠实的文字。长视频靠人工从头校对，则耗时且难以复核。
 
-这个项目把三件事组合在一起：
+这个项目把四件事组合在一起：
 
 - 用 SenseVoiceSmall 生成带全局时间戳的原始识别证据。
 - 用 Codex 结合上下文校订明确错误，同时禁止润色、概括和擅自补写。
+- 在英文校订稳定后，由 Codex 逐段生成与原文绑定的忠实中文翻译。
 - 用固定输出契约、哈希和最终校验保留可追溯性。
 
 ## 功能
@@ -30,16 +31,18 @@
 - **本地媒体处理与 ASR**：使用 yt-dlp、FFmpeg、FSMN-VAD 和 SenseVoiceSmall 完成音频准备、分段与识别。
 - **全局时间戳**：每段原始文字都保留 `HH:MM:SS.mmm` 起止时间。
 - **严格忠实校订**：只修正明确的识别错误、术语、人名、断句和标点，不把口语改写成书面语。
+- **英文自动生成中英双语**：保留校订后的英文原文，并在同一时间戳下给出忠实中文翻译；中文视频维持原有单语格式。
 - **显式表达不确定性**：使用 `[疑似：候选词]` 和 `[听不清]`，不靠猜测填空。
 - **原始证据不可变**：成功生成的 `raw-transcript.jsonl` 不会为了迎合校订结果而被覆盖。
 - **可恢复执行**：已完成的下载、转码和 VAD 结果会复用，ASR 与校订按段保存 checkpoint；中断在单次下载、转码或 VAD 操作内部时，该次操作会重跑，而不是承诺字节级续传。
+- **翻译也可恢复**：中文译文使用独立 checkpoint，逐行绑定稳定英文校订；源文变化后旧译文不能被误用。
 - **校订风险审计**：自动标记数字、完整日期、金额、拉丁标识符的增删与换序，以及大段删除和重写；等全部校订 checkpoint 稳定后，再统一逐条复听当前高风险发现并记录。
 - **进程不会无限卡住**：下载、工具启动和 ASR 子进程都有可调超时；超时后保留任务状态，可以继续运行。
 - **安全完成检查**：只有原始哈希、逐段对应关系、时间戳和存疑项全部通过校验，才会生成正式校订稿。
 
-校订规则不是隐藏提示词：可以直接查看 [`references/faithful-correction.md`](references/faithful-correction.md) 和 [`references/output-contract.md`](references/output-contract.md)。依赖版本、下载地址、文件大小与 SHA-256 则集中记录在 [`scripts/runtime-assets.json`](scripts/runtime-assets.json)。
+校订与翻译规则不是隐藏提示词：可以直接查看 [`references/faithful-correction.md`](references/faithful-correction.md)、[`references/faithful-translation-zh.md`](references/faithful-translation-zh.md) 和 [`references/output-contract.md`](references/output-contract.md)。依赖版本、下载地址、文件大小与 SHA-256 则集中记录在 [`scripts/runtime-assets.json`](scripts/runtime-assets.json)。
 
-关键机制也有对应的自动化测试：[`tests/test_prepare_transcript.py`](tests/test_prepare_transcript.py) 覆盖任务隔离、缓存校验、断点恢复和原始证据复用，[`tests/test_finalize_transcript.py`](tests/test_finalize_transcript.py) 覆盖原始哈希、逐段对应、并发保护和正式目录约束。
+关键机制也有对应的自动化测试：[`tests/test_prepare_transcript.py`](tests/test_prepare_transcript.py) 覆盖任务隔离、缓存校验、断点恢复和原始证据复用，[`tests/test_translation_contract.py`](tests/test_translation_contract.py) 覆盖翻译续接、源文绑定与安全替换，[`tests/test_finalize_transcript.py`](tests/test_finalize_transcript.py) 覆盖原始哈希、逐段对应、并发保护、双语输出和正式目录约束。
 
 ## 忠实性边界
 
@@ -52,12 +55,15 @@
 
 换句话说：目标不是得到最漂亮的文章，而是得到最接近原始表达、同时方便复核的文字证据。
 
+英文视频的中文行是校订完成后的第二层产物，不会取代英文原文。翻译可以采用自然中文语序，但不能概括、解释、补充背景、修正观点，或把原文的犹豫和不确定性翻得更肯定。
+
 ## 项目亮点
 
 | 亮点 | 带来的价值 |
 |---|---|
 | 原始稿与校订稿并存 | 可以随时回看 AI 改了什么 |
 | 一行原始记录对应一行校订状态 | 不容易漏段、乱序或悄悄删句 |
+| 英文原文与中文译文逐段绑定 | 可以直接阅读中文，也能随时回看英文措辞 |
 | ASR 在本地运行 | 音频处理和语音识别不依赖云端 ASR 服务 |
 | 自动准备运行环境 | 用户不需要预装 yt-dlp、FFmpeg、FunASR 或模型 |
 | 模型固定到不可变 commit，使用前重算 EXE/模型 SHA-256，缓存绑定 WAV、VAD 与运行时指纹，正式稿记录音频和运行时摘要 | 降低上游漂移、本地损坏、运行文件被替换或新旧缓存混用带来的不确定性 |
@@ -78,17 +84,25 @@ yt-dlp -> FFmpeg -> FSMN-VAD -> SenseVoiceSmall
 Codex 按上下文逐段忠实校订
         |
         v
+英文或实质性中英混合？ -- 是 --> 逐段中文翻译 checkpoint
+        |                           |
+        否                          v
+        |                    原文与译文绑定校验
+        +-------------+-------------+
+                      |
+                      v
 哈希、行数、时间戳、存疑标记、校订风险与目录结构校验
         |
         v
 raw-transcript.jsonl + corrected-transcript.md
 ```
 
-媒体准备和 ASR 在本地执行；Codex 负责上下文校订。因此项目不会把“整个流程”宣传成完全离线。
+媒体准备和 ASR 在本地执行；Codex 负责上下文校订，并在双语模式下负责中文翻译。因此项目不会把“整个流程”宣传成完全离线。
 
 ## 适用场景
 
 - 技术演讲、课程和教程的可检索文字版。
+- 英文讲座、访谈和课程的中英对照阅读稿。
 - 访谈、播客、直播回放和口述材料整理。
 - 论文调研、事实核对和需要回到原视频时间点的引用。
 - 为字幕制作准备带时间戳的原始底稿。
@@ -177,6 +191,19 @@ python -X utf8 "<SKILL_DIR>\scripts\prepare_transcript.py" --url "<URL>" --outpu
 - [00:01:42.000] `[疑似：遍历性]`：也可能是其他术语，音频不足以确认。
 ```
 
+### 英文视频的中英双语结果
+
+英文或包含完整英文语句的混合视频，会在同一时间点保留英文校订与中文翻译：
+
+```markdown
+## 逐字稿
+
+[00:00:12.400] **English:** Today we discuss speech recognition.
+[00:00:12.400] **中文：** 今天我们讨论语音识别。
+```
+
+偶尔出现的英文人名、标题、公式或单个术语不会让中文视频整体切换成双语模式。用户明确要求启用或关闭双语时，以用户要求为准。
+
 ## 输出内容
 
 每个视频或分 P 的正式目录严格只保留两个文件：
@@ -188,7 +215,7 @@ python -X utf8 "<SKILL_DIR>\scripts\prepare_transcript.py" --url "<URL>" --outpu
     └── corrected-transcript.md    # 忠实校订后的可读逐字稿
 ```
 
-音频、WAV、模型、日志、检查点和任务状态都保存在运行时目录，不会混入正式交付目录。
+音频、WAV、模型、日志、检查点和任务状态都保存在运行时目录，不会混入正式交付目录。双语任务的 `translations-zh.jsonl` 也只存在于运行时目录；正式目录仍然只有上面两个文件。
 
 `complete` 与 `incomplete` 都覆盖原始稿的每一行；局部存疑可以在其他检查通过后随完整稿交付，整行确实无法可靠听清时用单独的 `[听不清]` 明示弃答并标为 `incomplete`。
 
@@ -230,17 +257,21 @@ FunASR 要求运行路径只包含 ASCII。若 `%LOCALAPPDATA%` 含中文或其�
 
 可以。引导脚本会自动下载固定版本的 SenseVoiceSmall、FSMN-VAD、FunASR、FFmpeg 和 yt-dlp，并逐个检查 SHA-256。用户只需满足 Windows、Python、PowerShell、CPU 和网络要求。
 
+### 英文翻译需要再下载一个本地模型吗？
+
+不新增本地翻译模型。英文识别仍使用现有 SenseVoiceSmall，中文对照由当前 Codex 环境在英文忠实校订稳定后逐段生成，因此首次安装大小仍约为 372 MiB 下载、约 700 MiB 安装占用。
+
 ### 为什么同时保留原始稿和校订稿？
 
 原始稿回答“模型最初识别成了什么”，校订稿回答“结合上下文后，更可靠的忠实文本是什么”。两者分开，才方便复核修改、定位时间点和发现 AI 是否改得过头。
 
 ### 是完全离线的吗？
 
-不是。媒体下载、依赖下载和 Codex 校订需要相应网络能力；音频转换、VAD 和 SenseVoiceSmall ASR 在本地运行。校订阶段会把逐字稿内容交给当前 Codex 环境处理，具体数据保留方式取决于你所使用的 Codex 产品、账户和组织设置。
+不是。媒体下载、依赖下载以及 Codex 校订和翻译需要相应网络能力；音频转换、VAD 和 SenseVoiceSmall ASR 在本地运行。校订与翻译阶段会把逐字稿内容交给当前 Codex 环境处理，具体数据保留方式取决于你所使用的 Codex 产品、账户和组织设置。
 
 ### 一小时视频要多久，会消耗多少 Codex token？
 
-目前没有足够跨硬件、跨视频类型的数据给出可信的统一基准。耗时受下载速度、CPU、视频时长、VAD 分段数量和校订复杂度影响；Codex token 消耗也会随逐字稿长度与疑难段数量变化。README 不用单台电脑的结果冒充普遍性能。
+目前没有足够跨硬件、跨视频类型的数据给出可信的统一基准。耗时受下载速度、CPU、视频时长、VAD 分段数量、校订复杂度和是否需要双语翻译影响；Codex token 消耗也会随逐字稿长度、疑难段数量与翻译量变化。README 不用单台电脑的结果冒充普遍性能。
 
 ### 准确率是多少？
 
@@ -268,9 +299,9 @@ FunASR 要求运行路径只包含 ASCII。若 `%LOCALAPPDATA%` 含中文或其�
 
 ## 验证状态
 
-截至 2026-08-14，这个版本已经完成：
+截至 2026-08-16，这个版本已经完成：
 
-- 84 项 Python 自动化测试，并在 GitHub Actions 覆盖 Python 3.11、3.12 和 3.13。
+- 97 项 Python 自动化测试，并在 GitHub Actions 覆盖 Python 3.11、3.12 和 3.13。
 - Windows PowerShell 路径一致性、ACL 隔离与静态契约测试。
 - 五个远端运行资产的大小和摘要核验；每周/手动 CI 还会真实安装并复验完整运行时。
 - 从空目录完成约 372 MiB 依赖下载、展开、启动检查和 `VerifyOnly` 复验。

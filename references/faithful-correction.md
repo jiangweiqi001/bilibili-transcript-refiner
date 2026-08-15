@@ -16,7 +16,7 @@ Treat the recording as the authority and the raw ASR as immutable evidence. Corr
 
 - Do not improve style, grammar, rigor, or factual accuracy.
 - Do not delete repetitions, fillers, false starts, self-corrections, or colloquial constructions.
-- Do not combine separate claims, reorder speech, expand abbreviations the speaker did not expand, or translate foreign words.
+- During source-language correction, do not combine separate claims, reorder speech, expand abbreviations the speaker did not expand, or translate foreign words. A requested Chinese companion belongs only to the separate post-review translation stage.
 - Do not infer a term solely because it would make the argument better.
 - Do not hide low confidence behind fluent prose.
 
