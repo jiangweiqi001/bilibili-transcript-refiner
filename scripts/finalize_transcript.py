@@ -32,6 +32,11 @@ try:
         read_jsonl,
     )
     from scripts.review_corrections import validate_finding_reviews
+    from scripts.translation_contract import (
+        Translation,
+        read_translations,
+        validate_translation_pairing,
+    )
 except ModuleNotFoundError:  # Direct execution from scripts/.
     from correction_contract import (  # type: ignore
         Correction,
@@ -51,6 +56,11 @@ except ModuleNotFoundError:  # Direct execution from scripts/.
         read_jsonl,
     )
     from review_corrections import validate_finding_reviews  # type: ignore
+    from translation_contract import (  # type: ignore
+        Translation,
+        read_translations,
+        validate_translation_pairing,
+    )
 
 _ALLOWED_FORMAL_FILES = {"raw-transcript.jsonl", "corrected-transcript.md"}
 
@@ -114,6 +124,8 @@ def render_corrected(
     high_risk_reviewed_count: int = 0,
     source_audio_sha256: str | None = None,
     normalized_wav_sha256: str | None = None,
+    translation_rows: Sequence[Translation] | None = None,
+    translations_sha256: str | None = None,
 ) -> str:
     if status not in {"complete", "incomplete"}:
         raise ValueError("status must be complete or incomplete")
@@ -122,6 +134,19 @@ def render_corrected(
     if incomplete_reason and ("\n" in incomplete_reason or "\r" in incomplete_reason):
         raise ValueError("incomplete reason must stay on one line")
     _validate_pairing(raw_rows, correction_rows)
+    if translation_rows is None:
+        if translations_sha256 is not None:
+            raise ValueError(
+                "translations SHA-256 requires a Chinese translation checkpoint"
+            )
+    else:
+        validate_translation_pairing(correction_rows, translation_rows)
+        if not isinstance(translations_sha256, str) or not re.fullmatch(
+            r"[0-9A-Fa-f]{64}", translations_sha256
+        ):
+            raise ValueError(
+                "bilingual output requires the translation checkpoint SHA-256"
+            )
     if status == "complete" and any(
         is_whole_row_inaudible(row) for row in correction_rows
     ):
@@ -202,6 +227,14 @@ def render_corrected(
         )
     else:
         lines.append('asr_model: "SenseVoiceSmall"')
+    if translation_rows is not None:
+        lines.extend(
+            [
+                'output_mode: "bilingual-en-zh"',
+                'translation_mode: "faithful"',
+                f"translations_zh_sha256: {_yaml_string(translations_sha256.upper())}",
+            ]
+        )
     lines.extend(
         [
             'correction_mode: "faithful"',
@@ -215,9 +248,27 @@ def render_corrected(
     )
     if status == "incomplete":
         lines.extend(["", f"> 完整性说明：{incomplete_reason.strip()}"])
+    if translation_rows is not None:
+        lines.extend(
+            [
+                "",
+                "> 中文行是对稳定英文校订稿的忠实翻译；不概括、不解释、不修正说话人的观点，并保留原文的不确定性。",
+            ]
+        )
     lines.extend(["", "## 逐字稿", ""])
-    for row in correction_rows:
-        lines.extend([f"[{format_timestamp(row.start_ms)}] {row.text}", ""])
+    if translation_rows is None:
+        for row in correction_rows:
+            lines.extend([f"[{format_timestamp(row.start_ms)}] {row.text}", ""])
+    else:
+        for row, translated in zip(correction_rows, translation_rows):
+            timestamp = format_timestamp(row.start_ms)
+            lines.extend(
+                [
+                    f"[{timestamp}] **English:** {row.text}",
+                    f"[{timestamp}] **中文：** {translated.text_zh}",
+                    "",
+                ]
+            )
     lines.extend(["## 存疑处", ""])
     uncertainty_lines: list[str] = []
     for row in correction_rows:
@@ -256,6 +307,7 @@ def _finalize_transcript_locked(
     status: str,
     incomplete_reason: str | None = None,
     acknowledge_high_risk: bool = False,
+    bilingual: bool = False,
 ) -> Path:
     job_dir = Path(job_dir).resolve()
     output_root = Path(output_root).resolve()
@@ -286,6 +338,17 @@ def _finalize_transcript_locked(
         raise FileNotFoundError(f"correction checkpoint is missing: {corrections_path}")
     correction_rows = _read_corrections(corrections_path)
     _validate_pairing(raw_rows, correction_rows)
+    translation_rows: list[Translation] | None = None
+    translations_sha256: str | None = None
+    if bilingual:
+        translations_path = job_dir / "translations-zh.jsonl"
+        if not translations_path.is_file():
+            raise FileNotFoundError(
+                f"Chinese translation checkpoint is missing: {translations_path}"
+            )
+        translation_rows = read_translations(translations_path)
+        validate_translation_pairing(correction_rows, translation_rows)
+        translations_sha256 = _sha256(translations_path)
     if acknowledge_high_risk:
         raise ValueError(
             "global high-risk acknowledgement is no longer accepted; "
@@ -335,6 +398,8 @@ def _finalize_transcript_locked(
         high_risk_reviewed_count=reviewed_count,
         source_audio_sha256=source_audio_sha256.upper(),
         normalized_wav_sha256=normalized_wav_sha256.upper(),
+        translation_rows=translation_rows,
+        translations_sha256=translations_sha256,
     )
 
     _archive_owned_stale_partials(formal_dir, job_dir)
@@ -354,6 +419,16 @@ def _finalize_transcript_locked(
     if {path.name for path in formal_dir.iterdir()} != _ALLOWED_FORMAL_FILES:
         raise ValueError("formal directory must contain exactly the two deliverables")
 
+    if bilingual:
+        job_value.update(
+            {
+                "output_mode": "bilingual-en-zh",
+                "translations_zh_sha256": translations_sha256,
+            }
+        )
+    else:
+        job_value.pop("output_mode", None)
+        job_value.pop("translations_zh_sha256", None)
     job_value.update(
         {
             "correction_state": status,
@@ -378,6 +453,7 @@ def finalize_transcript(
     status: str,
     incomplete_reason: str | None = None,
     acknowledge_high_risk: bool = False,
+    bilingual: bool = False,
 ) -> Path:
     resolved_job_dir = Path(job_dir).resolve()
     with exclusive_job_lock(resolved_job_dir / "job.lock"):
@@ -387,6 +463,7 @@ def finalize_transcript(
             status=status,
             incomplete_reason=incomplete_reason,
             acknowledge_high_risk=acknowledge_high_risk,
+            bilingual=bilingual,
         )
 
 
@@ -398,12 +475,14 @@ def main() -> int:
     parser.add_argument("--output-root", required=True, type=Path)
     parser.add_argument("--status", required=True, choices=("complete", "incomplete"))
     parser.add_argument("--incomplete-reason")
+    parser.add_argument("--bilingual", action="store_true")
     args = parser.parse_args()
     corrected = finalize_transcript(
         args.job_dir,
         args.output_root,
         status=args.status,
         incomplete_reason=args.incomplete_reason,
+        bilingual=args.bilingual,
     )
     print(json.dumps({"corrected_path": str(corrected)}, ensure_ascii=False))
     return 0

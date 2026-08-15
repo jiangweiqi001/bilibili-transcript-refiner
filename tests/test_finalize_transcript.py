@@ -18,6 +18,7 @@ from scripts.transcript_contract import (
     read_jsonl,
     write_jsonl_atomic,
 )
+from scripts.translation_contract import Translation
 
 
 def sha256(path: Path) -> str:
@@ -157,6 +158,60 @@ class RenderingTests(unittest.TestCase):
         self.assertIn('status: "complete"', doc)
         self.assertIn(f"大家好，{marker}，今天开始。", doc)
 
+    def test_renders_timestamp_matched_english_and_chinese_lines(self):
+        raw = [
+            Segment(0, 1000, "Hello"),
+            Segment(1200, 2200, "We keep Python3"),
+        ]
+        corrections = [
+            Correction(0, 1000, "Hello.", ()),
+            Correction(1200, 2200, "We keep Python3.", ()),
+        ]
+        translations = [
+            Translation(0, 1000, "Hello.", "你好。"),
+            Translation(1200, 2200, "We keep Python3.", "我们保留 Python3。"),
+        ]
+
+        doc = render_corrected(
+            self.metadata,
+            raw,
+            corrections,
+            status="complete",
+            translation_rows=translations,
+            translations_sha256="A" * 64,
+        )
+
+        self.assertIn('output_mode: "bilingual-en-zh"', doc)
+        self.assertIn('translation_mode: "faithful"', doc)
+        self.assertIn(f'translations_zh_sha256: "{"A" * 64}"', doc)
+        self.assertIn("[00:00:00.000] **English:** Hello.", doc)
+        self.assertIn("[00:00:00.000] **中文：** 你好。", doc)
+        self.assertIn("[00:00:01.200] **English:** We keep Python3.", doc)
+        self.assertIn("[00:00:01.200] **中文：** 我们保留 Python3。", doc)
+
+    def test_bilingual_rendering_rejects_missing_hash_or_stale_source(self):
+        corrections = [Correction(0, 18_000, "Hello.", ())]
+        translations = [Translation(0, 18_000, "Hello.", "你好。")]
+
+        with self.assertRaisesRegex(ValueError, "SHA-256"):
+            render_corrected(
+                self.metadata,
+                self.raw[:1],
+                corrections,
+                status="complete",
+                translation_rows=translations,
+            )
+
+        with self.assertRaisesRegex(ValueError, "source text changed"):
+            render_corrected(
+                self.metadata,
+                self.raw[:1],
+                corrections,
+                status="complete",
+                translation_rows=[Translation(0, 18_000, "Hallo.", "你好。")],
+                translations_sha256="A" * 64,
+            )
+
     def test_checked_in_fixture_renders_the_contract(self):
         fixtures = Path(__file__).parent / "fixtures"
         raw = read_jsonl(fixtures / "raw-transcript.jsonl")
@@ -271,6 +326,16 @@ class FinalizationTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def write_translations(self, rows):
+        self.job.mkdir(parents=True, exist_ok=True)
+        (self.job / "translations-zh.jsonl").write_text(
+            "".join(
+                json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
+                for row in rows
+            ),
+            encoding="utf-8",
+        )
+
     def whole_row_inaudible_corrections(self, *, second_text="原始二。"):
         return [
             {
@@ -328,6 +393,84 @@ class FinalizationTests(unittest.TestCase):
         self.assertIn(f'vad_model_sha256: "{"1" * 64}"', document)
         self.assertRegex(document, r'generated_at: "\d{4}-\d{2}-\d{2}T')
         self.assertIn("correction_high_risk_reviewed: false", document)
+
+    def test_bilingual_finalization_requires_a_complete_current_translation_checkpoint(self):
+        with self.assertRaisesRegex(FileNotFoundError, "translation checkpoint"):
+            finalize_transcript(
+                self.job, self.output, status="complete", bilingual=True
+            )
+
+        self.write_translations(
+            [
+                {
+                    "start": "00:00:00.000",
+                    "end": "00:00:01.000",
+                    "source_text": "原始一。",
+                    "text_zh": "原始一。",
+                }
+            ]
+        )
+        with self.assertRaisesRegex(ValueError, "row count"):
+            finalize_transcript(
+                self.job, self.output, status="complete", bilingual=True
+            )
+
+        self.write_translations(
+            [
+                {
+                    "start": "00:00:00.000",
+                    "end": "00:00:01.000",
+                    "source_text": "已经过期。",
+                    "text_zh": "原始一。",
+                },
+                {
+                    "start": "00:00:01.200",
+                    "end": "00:00:02.200",
+                    "source_text": "原始二。",
+                    "text_zh": "原始二。",
+                },
+            ]
+        )
+        with self.assertRaisesRegex(ValueError, "source text changed"):
+            finalize_transcript(
+                self.job, self.output, status="complete", bilingual=True
+            )
+
+    def test_bilingual_finalization_records_translation_provenance_and_keeps_two_files(self):
+        self.write_translations(
+            [
+                {
+                    "start": "00:00:00.000",
+                    "end": "00:00:01.000",
+                    "source_text": "原始一。",
+                    "text_zh": "译文一。",
+                },
+                {
+                    "start": "00:00:01.200",
+                    "end": "00:00:02.200",
+                    "source_text": "原始二。",
+                    "text_zh": "译文二。",
+                },
+            ]
+        )
+        translations_path = self.job / "translations-zh.jsonl"
+
+        corrected = finalize_transcript(
+            self.job, self.output, status="complete", bilingual=True
+        )
+
+        document = corrected.read_text(encoding="utf-8")
+        expected_hash = sha256(translations_path)
+        self.assertIn(f'translations_zh_sha256: "{expected_hash}"', document)
+        self.assertIn("[00:00:00.000] **English:** 原始一。", document)
+        self.assertIn("[00:00:00.000] **中文：** 译文一。", document)
+        job_value = json.loads((self.job / "job.json").read_text(encoding="utf-8"))
+        self.assertEqual(job_value["output_mode"], "bilingual-en-zh")
+        self.assertEqual(job_value["translations_zh_sha256"], expected_hash)
+        self.assertEqual(
+            sorted(path.name for path in self.formal.iterdir()),
+            ["corrected-transcript.md", "raw-transcript.jsonl"],
+        )
 
     def test_complete_rejects_whole_row_inaudible_but_incomplete_finalizes(self):
         self.write_corrections(self.whole_row_inaudible_corrections())
@@ -529,6 +672,88 @@ class FinalizationTests(unittest.TestCase):
             (self.job / "correction-audit.json").read_text(encoding="utf-8")
         )
         self.assertGreaterEqual(audit["high_risk_count"], 1)
+
+    def test_translation_only_change_keeps_correction_audio_reviews_valid(self):
+        self.write_corrections(
+            [
+                {
+                    "start": "00:00:00.000",
+                    "end": "00:00:01.000",
+                    "text": "2025 年校订。",
+                    "uncertainties": [],
+                },
+                {
+                    "start": "00:00:01.200",
+                    "end": "00:00:02.200",
+                    "text": "原始二。",
+                    "uncertainties": [],
+                },
+            ]
+        )
+        self.rows = [Segment(0, 1000, "2024 年原始"), self.rows[1]]
+        self.raw.unlink()
+        write_jsonl_atomic(self.raw, self.rows)
+        manifest = json.loads((self.job / "job.json").read_text(encoding="utf-8"))
+        manifest["raw_sha256"] = sha256(self.raw)
+        write_json(self.job / "job.json", manifest)
+        clip = self.job / "runs" / "run-0001" / "clips" / "000000.wav"
+        clip.parent.mkdir(parents=True, exist_ok=True)
+        clip.write_bytes(b"reviewable audio")
+        for finding in list_review_findings(self.job):
+            record_finding_review(
+                self.job,
+                finding["finding_id"],
+                decision="confirmed",
+                note="已对照该段音频，确认英文校订内容。",
+            )
+        self.write_translations(
+            [
+                {
+                    "start": "00:00:00.000",
+                    "end": "00:00:01.000",
+                    "source_text": "2025 年校订。",
+                    "text_zh": "第一版译文。",
+                },
+                {
+                    "start": "00:00:01.200",
+                    "end": "00:00:02.200",
+                    "source_text": "原始二。",
+                    "text_zh": "第二行译文。",
+                },
+            ]
+        )
+
+        finalize_transcript(
+            self.job, self.output, status="complete", bilingual=True
+        )
+        reviews_before = (self.job / "correction-reviews.json").read_bytes()
+        self.write_translations(
+            [
+                {
+                    "start": "00:00:00.000",
+                    "end": "00:00:01.000",
+                    "source_text": "2025 年校订。",
+                    "text_zh": "修正后的第一版译文。",
+                },
+                {
+                    "start": "00:00:01.200",
+                    "end": "00:00:02.200",
+                    "source_text": "原始二。",
+                    "text_zh": "第二行译文。",
+                },
+            ]
+        )
+
+        corrected = finalize_transcript(
+            self.job, self.output, status="complete", bilingual=True
+        )
+
+        self.assertEqual(
+            (self.job / "correction-reviews.json").read_bytes(), reviews_before
+        )
+        self.assertIn(
+            "修正后的第一版译文。", corrected.read_text(encoding="utf-8")
+        )
 
     def test_bare_global_acknowledgement_cannot_unlock_finalization(self):
         self.write_corrections(
