@@ -129,6 +129,16 @@ A qualifying strict whole-row substitution must use `incomplete` and does not re
 
 Use `status: "incomplete"` when reliable correction cannot be claimed for the full recording, and add a prominent explanation immediately below the fidelity notice. Local uncertainty alone does not force this status; the strict whole-row abstention does.
 
+## Finalization mode
+
+Choose the output mode explicitly. The finalizer requires exactly one of `--source-only` or `--bilingual`; omitting both or passing both is an error. This guard changes no ASR evidence or saved checkpoint and does not download a translation model.
+
+For intentional source-only output, run `python -X utf8 "<SKILL_DIR>\scripts\finalize_transcript.py" --job-dir "<JOB_DIR>" --output-root "<DIR>" --status complete --source-only`.
+
+For bilingual output, run `python -X utf8 "<SKILL_DIR>\scripts\finalize_transcript.py" --job-dir "<JOB_DIR>" --output-root "<DIR>" --status complete --bilingual` only after the current translation checkpoint is complete.
+
+For either mode, replace `--status complete` with `--status incomplete --incomplete-reason "<REASON>"` when the status rules require it; keep the selected mode flag.
+
 ## Corrected Markdown
 
 Render this fixed shape:
@@ -209,4 +219,4 @@ Add a bilingual fidelity notice stating that Chinese lines translate the stable 
 - Ensure the formal directory contains no third file.
 - Wait for a complete, stable checkpoint before the final review. The strict whole-row `[听不清]` informational finding needs no fabricated review; every other current high-risk `finding_id`, including in an incomplete result, must have a current confirmed record in `correction-reviews.json`.
 - Declare completion only after the finalizer succeeds.
-- For bilingual output, require every correction row to have one current source-bound Chinese row, record `translations_zh_sha256`, and finalize with `--bilingual`.
+- Require every finalization to pass exactly one output-mode flag. For bilingual output, require every correction row to have one current source-bound Chinese row, record `translations_zh_sha256`, and finalize with `--bilingual`.

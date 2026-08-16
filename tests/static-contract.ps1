@@ -35,7 +35,7 @@ $required = @(
     '--replace-from <ROW_INDEX> --expected-corrections-sha256 "<CURRENT_CORRECTIONS_SHA256>"'
     'python -X utf8 "<SKILL_DIR>\scripts\review_corrections.py" list --job-dir "<JOB_DIR>"'
     'python -X utf8 "<SKILL_DIR>\scripts\review_corrections.py" record --job-dir "<JOB_DIR>" --finding-id "<FINDING_ID>" --decision confirmed --note "<REVIEW_NOTE>"'
-    'python -X utf8 "<SKILL_DIR>\scripts\finalize_transcript.py" --job-dir "<JOB_DIR>" --output-root "<DIR>" --status complete'
+    'python -X utf8 "<SKILL_DIR>\scripts\finalize_transcript.py" --job-dir "<JOB_DIR>" --output-root "<DIR>" --status complete --source-only'
     'correction-audit.json'
     'correction-reviews.json'
 )
@@ -292,6 +292,27 @@ $workflow = $skill + "`n" + $correctionGuide + "`n" + $translationGuide + "`n" +
 $bilingualWord = [string][char]0x4E2D + [char]0x82F1 + [char]0x53CC + [char]0x8BED
 $noLocalTranslationModel = [string][char]0x4E0D + [char]0x65B0 + [char]0x589E + [char]0x672C + [char]0x5730 + [char]0x7FFB + [char]0x8BD1 + [char]0x6A21 + [char]0x578B
 $chineseLineLabel = '**' + [char]0x4E2D + [char]0x6587 + [char]0xFF1A + '**'
+$finalizeBase = 'python -X utf8 "<SKILL_DIR>\scripts\finalize_transcript.py" --job-dir "<JOB_DIR>" --output-root "<DIR>" --status complete'
+$sourceOnlyFinalize = $finalizeBase + ' --source-only'
+$bilingualFinalize = $finalizeBase + ' --bilingual'
+$inlineFinalizerCommands = @(
+    [regex]::Matches($workflow, '`(?<command>python -X utf8 [^`]*finalize_transcript\.py[^`]*)`') |
+        ForEach-Object { $_.Groups['command'].Value }
+)
+
+foreach ($command in @($sourceOnlyFinalize, $bilingualFinalize)) {
+    if (@($inlineFinalizerCommands | Where-Object { $_ -ceq $command }).Count -lt 1) {
+        throw "missing explicit output-mode finalizer command: $command"
+    }
+}
+if (@($inlineFinalizerCommands | Where-Object { $_ -ceq $finalizeBase }).Count -ne 0) {
+    throw 'flagless source-only finalization must not remain documented'
+}
+foreach ($flag in @('--source-only', '--bilingual')) {
+    if (-not $readme.Contains($flag)) {
+        throw "README must document explicit output mode: $flag"
+    }
+}
 
 foreach ($needle in @(
     'references/faithful-translation-zh.md',

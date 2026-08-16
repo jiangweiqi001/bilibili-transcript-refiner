@@ -23,7 +23,7 @@ Support Windows only. Process one video/page per invocation. For multipart URLs,
 4. Run `powershell -NoProfile -ExecutionPolicy Bypass -File "<SKILL_DIR>\scripts\bootstrap_runtime.ps1" -RuntimeRoot "<RUNTIME_ROOT>"`. Keep its SenseVoiceSmall model, tools, jobs, and audio outside the requested output root.
 5. Run `python -X utf8 "<SKILL_DIR>\scripts\prepare_transcript.py" --url "<URL>" --output-root "<DIR>" --runtime-root "<RUNTIME_ROOT>"`. Read `job_dir` from its JSON output. Do not use `--rerun-asr` unless the user explicitly asks to replace successful ASR evidence.
    - After reading the raw transcript, select bilingual mode when speech is predominantly English or a mixed recording contains at least one complete English clause. A name, title, formula, or isolated English term inside otherwise Chinese speech does not trigger bilingual mode.
-   - An explicit user request for or against bilingual output overrides automatic classification.
+   - An explicit user request for or against bilingual output overrides automatic classification. Without such a request, predominantly English speech uses bilingual mode.
 6. Read [references/faithful-correction.md](references/faithful-correction.md) completely from `"<SKILL_DIR>\references\faithful-correction.md"`.
 7. Correct the job's raw segments chronologically in blocks. Write only the next block to a temporary `<BATCH_JSONL>`, then run `python -X utf8 "<SKILL_DIR>\scripts\checkpoint_corrections.py" --raw "<RAW_JSONL>" --checkpoint "<JOB_DIR>\corrections.jsonl" --batch "<BATCH_JSONL>"`. Never append to or edit the authoritative checkpoint directly. Resume from the returned `next_index`; keep earlier accepted rows unchanged.
    - After every block, refresh and read `<JOB_DIR>\correction-audit.json`; use it to revise unjustified findings, but do not list or record reviews during batching.
@@ -43,7 +43,8 @@ Support Windows only. Process one video/page per invocation. For multipart URLs,
    - Local uncertainty markers (`[疑似：…]` or `[听不清]`) may remain in `complete` after every other gate passes.
    - A strict whole-row substitution consisting of a single `[听不清]` must use `incomplete` and may proceed without fabricating an audio review for that informational finding.
    - Every other current high-risk finding in an incomplete job still requires a current confirmed review.
-   - For source-only output, run `python -X utf8 "<SKILL_DIR>\scripts\finalize_transcript.py" --job-dir "<JOB_DIR>" --output-root "<DIR>" --status complete` only after all rows, uncertainty listings, and current reviews pass. For bilingual output, add `--bilingual`; add it to the corresponding incomplete command as well. Use `--status incomplete --incomplete-reason "<REASON>"` when a reliable full result cannot be claimed.
+   - Make the output-mode decision explicit. For intentional source-only output, run `python -X utf8 "<SKILL_DIR>\scripts\finalize_transcript.py" --job-dir "<JOB_DIR>" --output-root "<DIR>" --status complete --source-only`. For bilingual output, run `python -X utf8 "<SKILL_DIR>\scripts\finalize_transcript.py" --job-dir "<JOB_DIR>" --output-root "<DIR>" --status complete --bilingual`. Omitting both mode flags is an error; do not use source-only as a silent fallback when bilingual work is unfinished.
+   - Use `--status incomplete --incomplete-reason "<REASON>"` instead of `--status complete` when a reliable full result cannot be claimed, and still pass exactly one of `--source-only` or `--bilingual`.
 10. Validate that the formal directory contains exactly `raw-transcript.jsonl` and `corrected-transcript.md`, then report both paths.
 
 ## Non-negotiable fidelity

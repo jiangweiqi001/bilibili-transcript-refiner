@@ -204,6 +204,13 @@ python -X utf8 "<SKILL_DIR>\scripts\prepare_transcript.py" --url "<URL>" --outpu
 
 偶尔出现的英文人名、标题、公式或单个术语不会让中文视频整体切换成双语模式。用户明确要求启用或关闭双语时，以用户要求为准。
 
+最终收尾不会把“忘记选择模式”默认为纯英文：命令必须显式使用 `--bilingual` 或 `--source-only`。以英文为主的视频在用户没有另行要求时选择 `--bilingual`；只有用户明确只要源语言稿时才选择 `--source-only`。两者都不写或同时写都会报错，不会悄悄交付错误模式。
+
+```powershell
+python -X utf8 "<SKILL_DIR>\scripts\finalize_transcript.py" --job-dir "<JOB_DIR>" --output-root "<DIR>" --status complete --source-only
+python -X utf8 "<SKILL_DIR>\scripts\finalize_transcript.py" --job-dir "<JOB_DIR>" --output-root "<DIR>" --status complete --bilingual
+```
+
 ## 输出内容
 
 每个视频或分 P 的正式目录严格只保留两个文件：
@@ -301,7 +308,7 @@ FunASR 要求运行路径只包含 ASCII。若 `%LOCALAPPDATA%` 含中文或其�
 
 截至 2026-08-16，这个版本已经完成：
 
-- 97 项 Python 自动化测试，并在 GitHub Actions 覆盖 Python 3.11、3.12 和 3.13。
+- 99 项 Python 自动化测试，并在 GitHub Actions 覆盖 Python 3.11、3.12 和 3.13。
 - Windows PowerShell 路径一致性、ACL 隔离与静态契约测试。
 - 五个远端运行资产的大小和摘要核验；每周/手动 CI 还会真实安装并复验完整运行时。
 - 从空目录完成约 372 MiB 依赖下载、展开、启动检查和 `VerifyOnly` 复验。

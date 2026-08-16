@@ -453,8 +453,12 @@ def finalize_transcript(
     status: str,
     incomplete_reason: str | None = None,
     acknowledge_high_risk: bool = False,
-    bilingual: bool = False,
+    bilingual: bool | None = None,
 ) -> Path:
+    if bilingual is None:
+        raise ValueError(
+            "output mode is required; pass bilingual=True or bilingual=False"
+        )
     resolved_job_dir = Path(job_dir).resolve()
     with exclusive_job_lock(resolved_job_dir / "job.lock"):
         return _finalize_transcript_locked(
@@ -475,7 +479,9 @@ def main() -> int:
     parser.add_argument("--output-root", required=True, type=Path)
     parser.add_argument("--status", required=True, choices=("complete", "incomplete"))
     parser.add_argument("--incomplete-reason")
-    parser.add_argument("--bilingual", action="store_true")
+    output_mode = parser.add_mutually_exclusive_group(required=True)
+    output_mode.add_argument("--bilingual", action="store_true")
+    output_mode.add_argument("--source-only", action="store_true")
     args = parser.parse_args()
     corrected = finalize_transcript(
         args.job_dir,

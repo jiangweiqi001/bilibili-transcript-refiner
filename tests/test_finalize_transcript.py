@@ -1,5 +1,7 @@
 import hashlib
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -358,7 +360,9 @@ class FinalizationTests(unittest.TestCase):
         ]
 
     def test_finalizes_atomically_and_keeps_exactly_two_files(self):
-        corrected = finalize_transcript(self.job, self.output, status="complete")
+        corrected = finalize_transcript(
+            self.job, self.output, status="complete", bilingual=False
+        )
         self.assertEqual(corrected, (self.formal / "corrected-transcript.md").resolve())
         self.assertEqual(self.raw.read_bytes(), self.raw_before)
         self.assertEqual(
@@ -393,6 +397,35 @@ class FinalizationTests(unittest.TestCase):
         self.assertIn(f'vad_model_sha256: "{"1" * 64}"', document)
         self.assertRegex(document, r'generated_at: "\d{4}-\d{2}-\d{2}T')
         self.assertIn("correction_high_risk_reviewed: false", document)
+
+    def test_finalize_requires_an_explicit_output_mode(self):
+        with self.assertRaisesRegex(ValueError, "output mode"):
+            finalize_transcript(self.job, self.output, status="complete")
+
+    def test_cli_requires_exactly_one_output_mode(self):
+        script = Path(__file__).parents[1] / "scripts" / "finalize_transcript.py"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-X",
+                "utf8",
+                str(script),
+                "--job-dir",
+                str(self.job),
+                "--output-root",
+                str(self.output),
+                "--status",
+                "complete",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--bilingual", result.stderr)
+        self.assertIn("--source-only", result.stderr)
 
     def test_bilingual_finalization_requires_a_complete_current_translation_checkpoint(self):
         with self.assertRaisesRegex(FileNotFoundError, "translation checkpoint"):
@@ -476,7 +509,9 @@ class FinalizationTests(unittest.TestCase):
         self.write_corrections(self.whole_row_inaudible_corrections())
 
         with self.assertRaisesRegex(ValueError, "status incomplete"):
-            finalize_transcript(self.job, self.output, status="complete")
+            finalize_transcript(
+                self.job, self.output, status="complete", bilingual=False
+            )
 
         reviews_path = self.job / "correction-reviews.json"
         self.assertFalse(reviews_path.exists())
@@ -486,6 +521,7 @@ class FinalizationTests(unittest.TestCase):
             self.output,
             status="incomplete",
             incomplete_reason=reason,
+            bilingual=False,
         )
 
         self.assertFalse(reviews_path.exists())
@@ -521,7 +557,9 @@ class FinalizationTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ValueError, "status incomplete"):
-            finalize_transcript(self.job, self.output, status="complete")
+            finalize_transcript(
+                self.job, self.output, status="complete", bilingual=False
+            )
 
         self.assertFalse((self.formal / "corrected-transcript.md").exists())
 
@@ -539,6 +577,7 @@ class FinalizationTests(unittest.TestCase):
                 self.output,
                 status="incomplete",
                 incomplete_reason="首段音频无法可靠辨认。",
+                bilingual=False,
             )
 
         audit = json.loads(
@@ -568,6 +607,7 @@ class FinalizationTests(unittest.TestCase):
                 self.output,
                 status="incomplete",
                 incomplete_reason="校订尚未覆盖全部分段。",
+                bilingual=False,
             )
 
         self.assertFalse((self.job / "correction-audit.json").exists())
@@ -575,18 +615,24 @@ class FinalizationTests(unittest.TestCase):
     def test_finalize_rejects_a_concurrent_job_transition(self):
         with exclusive_job_lock(self.job / "job.lock"):
             with self.assertRaisesRegex(RuntimeError, "already running"):
-                finalize_transcript(self.job, self.output, status="complete")
+                finalize_transcript(
+                    self.job, self.output, status="complete", bilingual=False
+                )
 
     def test_rejects_changed_raw_hash(self):
         self.raw.write_bytes(self.raw.read_bytes() + b"\n")
         with self.assertRaisesRegex(ValueError, "SHA-256"):
-            finalize_transcript(self.job, self.output, status="complete")
+            finalize_transcript(
+                self.job, self.output, status="complete", bilingual=False
+            )
 
     def test_rejects_changed_normalized_wav_hash(self):
         self.normalized_wav.write_bytes(b"tampered after transcript preparation")
 
         with self.assertRaisesRegex(ValueError, "normalized WAV SHA-256"):
-            finalize_transcript(self.job, self.output, status="complete")
+            finalize_transcript(
+                self.job, self.output, status="complete", bilingual=False
+            )
 
     def test_rejects_changed_timestamp_or_row_count(self):
         self.write_corrections(
@@ -600,18 +646,24 @@ class FinalizationTests(unittest.TestCase):
             ]
         )
         with self.assertRaisesRegex(ValueError, "count|timestamps"):
-            finalize_transcript(self.job, self.output, status="complete")
+            finalize_transcript(
+                self.job, self.output, status="complete", bilingual=False
+            )
 
     def test_rejects_unexpected_formal_file(self):
         (self.formal / "summary.md").write_text("not allowed", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "unexpected deliverable"):
-            finalize_transcript(self.job, self.output, status="complete")
+            finalize_transcript(
+                self.job, self.output, status="complete", bilingual=False
+            )
 
     def test_archives_owned_stale_formal_partial_before_retrying(self):
         stale = self.formal / "corrected-transcript.md.partial-crashed"
         stale.write_text("interrupted output", encoding="utf-8")
 
-        corrected = finalize_transcript(self.job, self.output, status="complete")
+        corrected = finalize_transcript(
+            self.job, self.output, status="complete", bilingual=False
+        )
 
         self.assertTrue(corrected.is_file())
         self.assertFalse(stale.exists())
@@ -651,7 +703,9 @@ class FinalizationTests(unittest.TestCase):
         clip.write_bytes(b"reviewable audio")
 
         with self.assertRaisesRegex(ValueError, "unreviewed high-risk"):
-            finalize_transcript(self.job, self.output, status="complete")
+            finalize_transcript(
+                self.job, self.output, status="complete", bilingual=False
+            )
 
         findings = list_review_findings(self.job)
         self.assertGreaterEqual(len(findings), 1)
@@ -664,7 +718,9 @@ class FinalizationTests(unittest.TestCase):
                 note="已对照该段音频，确认校订内容。",
             )
 
-        corrected = finalize_transcript(self.job, self.output, status="complete")
+        corrected = finalize_transcript(
+            self.job, self.output, status="complete", bilingual=False
+        )
         self.assertTrue(corrected.is_file())
         document = corrected.read_text(encoding="utf-8")
         self.assertIn("correction_high_risk_reviewed: true", document)
@@ -779,6 +835,7 @@ class FinalizationTests(unittest.TestCase):
                 self.output,
                 status="complete",
                 acknowledge_high_risk=True,
+                bilingual=False,
             )
 
     def test_review_rejects_an_active_run_path_escape(self):
@@ -841,7 +898,9 @@ class FinalizationTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ValueError, "unreviewed high-risk"):
-            finalize_transcript(self.job, self.output, status="complete")
+            finalize_transcript(
+                self.job, self.output, status="complete", bilingual=False
+            )
 
 
 if __name__ == "__main__":
